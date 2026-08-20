@@ -85,6 +85,7 @@ type AppData = {
   members: Member[];
   tasksByMember: Record<string, StudyTask[]>;
   planDays: PlanDay[];
+  taskTemplate: StudyTask[];
   courseTemplates: CourseTemplate[];
   overdueTasks: OverdueTask[];
   repeatDaily: boolean;
@@ -99,6 +100,7 @@ type HistoryData = {
   completedDays: number;
 };
 type AppView = "dashboard" | "history";
+type TemplateApplyResult = { appliedDays: string[]; skippedDays: string[] };
 
 type ChangelogEntry = {
   version: string;
@@ -381,6 +383,7 @@ export default function Home() {
     setData({
       ...nextData,
       planDays: Array.isArray(nextData.planDays) ? nextData.planDays : [{ day: requestedDay, tasks: myTasks }],
+      taskTemplate: Array.isArray(nextData.taskTemplate) ? nextData.taskTemplate : [],
       courseTemplates: Array.isArray(nextData.courseTemplates) ? nextData.courseTemplates : [],
       overdueTasks: Array.isArray(nextData.overdueTasks) ? nextData.overdueTasks : [],
     });
@@ -567,26 +570,48 @@ export default function Home() {
     setEditing(true);
   }
 
-  async function saveTasks(tasks: StudyTask[], repeatDaily: boolean) {
+  async function saveTasks(tasks: StudyTask[]) {
     if (!token) return;
     setError("");
-    const payload: Record<string, unknown> = { token, day: editingDay, tasks };
-    if (editingDay === localDay()) payload.repeatDaily = repeatDaily;
-    await callStudyApi("saveTasks", payload);
+    await callStudyApi("saveTasks", { token, day: editingDay, tasks });
     await load(token);
     setEditing(false);
   }
 
-  async function resetTasks() {
+  async function saveDefaultTaskTemplate(tasks: StudyTask[]) {
     if (!token) return;
+    setPlanBusy("save-default-template");
     setError("");
-    await callStudyApi("resetTasks", {
-      token,
-      day: editingDay,
-      resetRecurring: editingDay === localDay(),
-    });
-    await load(token);
-    setEditing(false);
+    try {
+      await callStudyApi("saveTaskTemplate", { token, day: localDay(), tasks });
+      await load(token);
+    } finally {
+      setPlanBusy("");
+    }
+  }
+
+  async function applyDefaultTaskTemplate(scope: "today" | "window", closeEditor = false) {
+    if (!token) return { appliedDays: [], skippedDays: [] };
+    setPlanBusy(`apply-default-${scope}`);
+    setError("");
+    try {
+      const result = await callStudyApi<TemplateApplyResult>("applyTaskTemplate", {
+        token,
+        day: scope === "today" && closeEditor ? editingDay : localDay(),
+        scope,
+      });
+      await load(token);
+      if (result.skippedDays.length) {
+        const labels = result.skippedDays.map(formatPlanDate).join("、");
+        const rest = result.appliedDays.length ? "其他日期已应用默认模板。" : "没有改动原计划。";
+        setError(`${labels}有打卡或学习记录，已保留原计划；${rest}`);
+      } else if (closeEditor) {
+        setEditing(false);
+      }
+      return result;
+    } finally {
+      setPlanBusy("");
+    }
   }
 
   async function saveCourseTemplate(input: CourseTemplateInput) {
@@ -1016,20 +1041,18 @@ export default function Home() {
 
       {editing && data && (
         <TaskEditor
-          member={data.me}
           day={editingDay}
           tasks={editingTasks}
-          repeatDaily={data.repeatDaily}
-          showRepeat={editingDay === localDay()}
           onClose={() => setEditing(false)}
           onSave={saveTasks}
-          onReset={resetTasks}
+          onReset={() => applyDefaultTaskTemplate("today", true)}
         />
       )}
 
       {plannerOpen && data && (
         <CoursePlanner
           planDays={data.planDays}
+          taskTemplate={data.taskTemplate}
           templates={data.courseTemplates}
           busy={planBusy}
           onClose={() => setPlannerOpen(false)}
@@ -1040,6 +1063,8 @@ export default function Home() {
           onSaveTemplate={saveCourseTemplate}
           onDeleteTemplate={deleteCourseTemplate}
           onGenerateWindow={generateCourseWindow}
+          onSaveDefaultTemplate={saveDefaultTaskTemplate}
+          onApplyDefaultTemplate={(scope) => applyDefaultTaskTemplate(scope)}
         />
       )}
 
@@ -1480,8 +1505,9 @@ function weeklySummary(counts: number[]) {
   return active.length ? active.join(" · ") : "尚未安排课程";
 }
 
-function CoursePlanner({ planDays, templates, busy, onClose, onEditDay, onSaveTemplate, onDeleteTemplate, onGenerateWindow }: {
+function CoursePlanner({ planDays, taskTemplate, templates, busy, onClose, onEditDay, onSaveTemplate, onDeleteTemplate, onGenerateWindow, onSaveDefaultTemplate, onApplyDefaultTemplate }: {
   planDays: PlanDay[];
+  taskTemplate: StudyTask[];
   templates: CourseTemplate[];
   busy: string;
   onClose: () => void;
@@ -1489,8 +1515,10 @@ function CoursePlanner({ planDays, templates, busy, onClose, onEditDay, onSaveTe
   onSaveTemplate: (input: CourseTemplateInput) => Promise<void>;
   onDeleteTemplate: (courseId: string, effectiveDay: string) => Promise<void>;
   onGenerateWindow: (scheduleId: string) => Promise<void>;
+  onSaveDefaultTemplate: (tasks: StudyTask[]) => Promise<void>;
+  onApplyDefaultTemplate: (scope: "today" | "window") => Promise<TemplateApplyResult>;
 }) {
-  const [tab, setTab] = useState<"plan" | "templates">("plan");
+  const [tab, setTab] = useState<"plan" | "templates" | "default">("plan");
   const [editingTemplate, setEditingTemplate] = useState<CourseTemplate | "new" | null>(null);
   const [message, setMessage] = useState("");
 
@@ -1526,11 +1554,12 @@ function CoursePlanner({ planDays, templates, busy, onClose, onEditDay, onSaveTe
     <div className="modal-backdrop planner-backdrop">
       <section className="login-card course-planner" role="dialog" aria-modal="true" aria-label="7天课程计划">
         <div className="editor-heading">
-          <div><span>COURSE PLANNER</span><h2>课程与7天计划</h2></div>
+          <div><span>PLAN TEMPLATES</span><h2>模板与7天计划</h2></div>
           <button onClick={onClose} aria-label="关闭">×</button>
         </div>
         <div className="planner-tabs" role="tablist">
           <button className={tab === "plan" ? "active" : ""} onClick={() => setTab("plan")}>未来7天</button>
+          <button className={tab === "default" ? "active" : ""} onClick={() => setTab("default")}>默认模板</button>
           <button className={tab === "templates" ? "active" : ""} onClick={() => setTab("templates")}>课程模板</button>
         </div>
 
@@ -1557,6 +1586,13 @@ function CoursePlanner({ planDays, templates, busy, onClose, onEditDay, onSaveTe
               ))}
             </div>
           </>
+        ) : tab === "default" ? (
+          <DefaultTaskTemplatePanel
+            tasks={taskTemplate}
+            busy={Boolean(busy)}
+            onSave={onSaveDefaultTemplate}
+            onApply={onApplyDefaultTemplate}
+          />
         ) : (
           <>
             <div className="template-toolbar">
@@ -1585,6 +1621,113 @@ function CoursePlanner({ planDays, templates, busy, onClose, onEditDay, onSaveTe
         )}
       </section>
     </div>
+  );
+}
+
+function DefaultTaskTemplatePanel({ tasks, busy, onSave, onApply }: {
+  tasks: StudyTask[];
+  busy: boolean;
+  onSave: (tasks: StudyTask[]) => Promise<void>;
+  onApply: (scope: "today" | "window") => Promise<TemplateApplyResult>;
+}) {
+  const [drafts, setDrafts] = useState<DraftTask[]>(() => tasks.map((task) => ({ ...task, key: task.id })));
+  const [submitting, setSubmitting] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    setDrafts(tasks.map((task) => ({ ...task, key: task.id })));
+  }, [tasks]);
+
+  function addTask() {
+    if (drafts.length >= 12) return;
+    setDrafts((current) => [...current, {
+      id: "",
+      title: "",
+      completed: false,
+      key: `template-draft-${Date.now()}-${current.length}`,
+    }]);
+  }
+
+  function moveTask(key: string, direction: -1 | 1) {
+    setDrafts((current) => {
+      const index = current.findIndex((task) => task.key === key);
+      const nextIndex = index + direction;
+      if (index < 0 || nextIndex < 0 || nextIndex >= current.length) return current;
+      const reordered = [...current];
+      [reordered[index], reordered[nextIndex]] = [reordered[nextIndex], reordered[index]];
+      return reordered;
+    });
+  }
+
+  function cleanedDrafts() {
+    return drafts
+      .map(({ key: _key, kind: _kind, courseId: _courseId, scheduleId: _scheduleId, courseName: _courseName, lessonKey: _lessonKey, unit: _unit, lesson: _lesson, autoGenerated: _autoGenerated, makeupFromDay: _makeupFromDay, ...task }) => ({
+        ...task,
+        title: task.title.trim(),
+        completed: false,
+      }))
+      .filter((task) => task.title);
+  }
+
+  async function submit(scope?: "today" | "window") {
+    if (scope === "window" && !window.confirm("保存默认模板并应用到当前固定7天吗？\n\n已有打卡或学习记录的日期会自动保留，其他日期的手动任务会被模板替换。")) return;
+    setSubmitting(true);
+    setMessage("");
+    try {
+      await onSave(cleanedDrafts());
+      if (!scope) {
+        setMessage("默认模板已保存，当前7天计划保持不变。");
+        return;
+      }
+      const result = await onApply(scope);
+      if (result.skippedDays.length) {
+        const labels = result.skippedDays.map(formatPlanDate).join("、");
+        const rest = result.appliedDays.length ? "其余日期已应用模板。" : "没有改动原计划。";
+        setMessage(`${labels}已有打卡或学习记录，已保留原计划；${rest}`);
+      } else {
+        setMessage(scope === "today" ? "默认模板已应用到今天。" : "默认模板已应用到当前固定7天。");
+      }
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "模板操作失败");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <section className="default-template-panel" aria-label="默认任务模板">
+      <div className="template-toolbar default-template-toolbar">
+        <p>这里填写每天都可能使用的普通任务；课程任务仍由课程模板自动叠加。</p>
+        <button onClick={addTask} disabled={busy || submitting || drafts.length >= 12}>＋ 添加任务</button>
+      </div>
+      <div className="task-editor-list default-template-list">
+        {drafts.map((task, index) => (
+          <div key={task.key}>
+            <span>{index + 1}</span>
+            <input
+              value={task.title}
+              maxLength={30}
+              placeholder="例如：英语单词复习"
+              disabled={busy || submitting}
+              onChange={(event) => setDrafts((current) => current.map((item) => item.key === task.key ? { ...item, title: event.target.value } : item))}
+            />
+            <div className="task-order-buttons" aria-label={`调整模板第 ${index + 1} 项顺序`}>
+              <button onClick={() => moveTask(task.key, -1)} disabled={busy || submitting || index === 0} aria-label={`上移模板第 ${index + 1} 项`}>↑</button>
+              <button onClick={() => moveTask(task.key, 1)} disabled={busy || submitting || index === drafts.length - 1} aria-label={`下移模板第 ${index + 1} 项`}>↓</button>
+            </div>
+            <button onClick={() => setDrafts((current) => current.filter((item) => item.key !== task.key))} disabled={busy || submitting} aria-label={`删除模板第 ${index + 1} 项`}>−</button>
+          </div>
+        ))}
+        {!drafts.length && <p>默认模板可以为空；课程模板仍会照常生成课程任务。</p>}
+      </div>
+      <div className="default-template-note">套用模板会替换所选日期的普通手动任务，并重新叠加对应日期的课程安排。</div>
+      {message && <p className="template-result-message" role="status">{message}</p>}
+      <div className="default-template-actions">
+        <button className="secondary-button" onClick={() => submit()} disabled={busy || submitting}>{submitting ? "处理中…" : "仅保存模板"}</button>
+        <button className="secondary-button" onClick={() => submit("today")} disabled={busy || submitting}>保存并应用今天</button>
+        <button className="primary-button" onClick={() => submit("window")} disabled={busy || submitting}>保存并应用7天</button>
+      </div>
+    </section>
   );
 }
 
@@ -1725,18 +1868,14 @@ function CourseTemplateEditor({ template, planDays, busy, onBack, onClose, onSav
   );
 }
 
-function TaskEditor({ member, day, tasks, repeatDaily: initialRepeatDaily, showRepeat, onClose, onSave, onReset }: {
-  member: Member;
+function TaskEditor({ day, tasks, onClose, onSave, onReset }: {
   day: string;
   tasks: StudyTask[];
-  repeatDaily: boolean;
-  showRepeat: boolean;
   onClose: () => void;
-  onSave: (tasks: StudyTask[], repeatDaily: boolean) => Promise<void>;
-  onReset: () => Promise<void>;
+  onSave: (tasks: StudyTask[]) => Promise<void>;
+  onReset: () => Promise<TemplateApplyResult>;
 }) {
   const [drafts, setDrafts] = useState<DraftTask[]>(tasks.map((task) => ({ ...task, key: task.id })));
-  const [repeatDaily, setRepeatDaily] = useState(initialRepeatDaily);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -1760,7 +1899,7 @@ function TaskEditor({ member, day, tasks, repeatDaily: initialRepeatDaily, showR
     const cleaned = drafts.map(({ key: _key, ...task }) => ({ ...task, title: task.title.trim() })).filter((task) => task.title);
     setSaving(true);
     setMessage("");
-    try { await onSave(cleaned, repeatDaily); } catch (err) {
+    try { await onSave(cleaned); } catch (err) {
       setMessage(err instanceof Error ? err.message : "保存失败");
       setSaving(false);
     }
@@ -1769,17 +1908,19 @@ function TaskEditor({ member, day, tasks, repeatDaily: initialRepeatDaily, showR
   async function reset() {
     setSaving(true);
     setMessage("");
-    try { await onReset(); } catch (err) {
+    try {
+      const result = await onReset();
+      if (result.skippedDays.length) setMessage("这一天已有打卡或学习记录，不能移除相关任务；原计划已保留。");
+    } catch (err) {
       setMessage(err instanceof Error ? err.message : "恢复失败");
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   }
 
   return (
     <div className="modal-backdrop">
       <section className="login-card task-editor" role="dialog" aria-modal="true" aria-label={`编辑${day}任务`}>
         <div className="editor-heading"><div><span>{day === localDay() ? "今日计划" : "单日计划"}</span><h2>编辑{formatPlanDate(day)}的任务</h2></div><button onClick={onClose} aria-label="关闭">×</button></div>
-        <p className="login-copy">最多添加 12 项。手动保存后，这一天不会再被自动排课覆盖；修改自动课程标题会按新任务处理。</p>
+        <p className="login-copy">这里只修改这一天，不会改变默认模板。最多添加 12 项；修改自动课程标题会按新任务处理。</p>
         <div className="task-editor-list">
           {drafts.map((task, index) => (
             <div key={task.key}>
@@ -1800,21 +1941,10 @@ function TaskEditor({ member, day, tasks, repeatDaily: initialRepeatDaily, showR
           {!drafts.length && <p>任务列表为空，点击下方按钮添加。</p>}
         </div>
         <button className="add-task-button" onClick={addTask} disabled={drafts.length >= 12}>＋ 添加一项任务</button>
-        {showRepeat && <button
-          type="button"
-          className={`repeat-task-toggle ${repeatDaily ? "active" : ""}`}
-          role="switch"
-          aria-checked={repeatDaily}
-          onClick={() => setRepeatDaily((current) => !current)}
-          disabled={saving}
-        >
-          <span><strong>每天重复</strong><small>{repeatDaily ? "当前任务将从今天起每天自动沿用" : "关闭时只保存当前学习日"}</small></span>
-          <i aria-hidden="true"><b /></i>
-        </button>}
         {message && <p className="form-error">{message}</p>}
         <div className="editor-actions">
-          <button className="secondary-button" onClick={reset} disabled={saving}>{showRepeat ? repeatDaily ? "停止重复并恢复默认" : member.userKey === "user1" ? "恢复默认任务" : "清空今日任务" : "恢复自动计划"}</button>
-          <button className="primary-button" onClick={save} disabled={saving}>{saving ? "保存中…" : showRepeat && repeatDaily ? "保存并每天重复" : day === localDay() ? "保存今日任务" : "保存这一天"}</button>
+          <button className="secondary-button" onClick={reset} disabled={saving}>套用默认模板</button>
+          <button className="primary-button" onClick={save} disabled={saving}>{saving ? "保存中…" : day === localDay() ? "保存今日任务" : "保存这一天"}</button>
         </div>
       </section>
     </div>

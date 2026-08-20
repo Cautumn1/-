@@ -132,9 +132,19 @@ function cleanTaskInput(tasks, existingTasks = []) {
   return cleaned;
 }
 
+function taskTemplateFor(member) {
+  if (Array.isArray(member.taskTemplate)) return cleanStoredTasks(member.taskTemplate);
+  if (Array.isArray(member.recurringTasks)) return cleanStoredTasks(member.recurringTasks);
+  return cleanStoredTasks(DEFAULT_TASKS[member.userKey] ?? []);
+}
+
 function baseTasksFor(member, day) {
   if (member.taskOverrides && Object.prototype.hasOwnProperty.call(member.taskOverrides, day)) {
     return cleanStoredTasks(member.taskOverrides[day]);
+  }
+  const templateSince = typeof member.taskTemplateSince === "string" ? member.taskTemplateSince : "";
+  if (Array.isArray(member.taskTemplate) && (!templateSince || day >= templateSince)) {
+    return cleanStoredTasks(member.taskTemplate);
   }
   const recurringSince = typeof member.recurringTasksSince === "string" ? member.recurringTasksSince : "";
   if (Array.isArray(member.recurringTasks) && (!recurringSince || day >= recurringSince)) {
@@ -639,6 +649,7 @@ async function getData(event) {
     members,
     tasksByMember,
     planDays: planByMember[current.member.id],
+    taskTemplate: taskTemplateFor(current.member).map((task) => ({ ...task, completed: false })),
     courseTemplates: publicCourseTemplates(current.member, event.day),
     overdueTasks: overdueTasks.slice(0, MAX_TASKS_PER_DAY),
     repeatDaily: Array.isArray(current.member.recurringTasks),
@@ -1078,40 +1089,124 @@ async function saveTasks(event) {
   const member = await readCurrentMember(event.token);
   const existingTasks = tasksFor(member, event.day);
   const tasks = cleanTaskInput(event.tasks, existingTasks);
-  const repeatProvided = typeof event.repeatDaily === "boolean";
-  const repeatDaily = event.repeatDaily === true;
-  const recurringTasks = tasks.filter((task) => task.kind !== "course");
   const overrides = { ...(member.taskOverrides || {}) };
-  if (repeatProvided && repeatDaily) {
-    for (const day of Object.keys(overrides)) {
-      if (day >= event.day) delete overrides[day];
-    }
-  } else {
-    overrides[event.day] = tasks;
-  }
+  overrides[event.day] = tasks;
   const days = Object.keys(overrides).sort().reverse();
   for (const oldDay of days.slice(60)) delete overrides[oldDay];
 
-  const update = {
+  const nextIds = new Set(tasks.map((task) => task.id));
+  const removedIds = new Set(existingTasks.filter((task) => !nextIds.has(task.id)).map((task) => task.id));
+  if (removedIds.size) {
+    const [rows, presence, focusState] = await Promise.all([
+      db.collection("checkins").where({ groupId: GROUP_ID, day: event.day }).limit(100).get(),
+      loadFocusPresence(MEMBER_DEFINITIONS, event.day),
+      loadFocusState(member, event.day),
+    ]);
+    const hasCompleted = (rows.data || []).some((row) => (
+      row.memberId === member.id && removedIds.has(row.taskId || row.task)
+    ));
+    const hasStudyRecord = (focusState.days?.[event.day]?.segments || []).some((segment) => (
+      removedIds.has(segment.taskId)
+    ));
+    const active = presence.activeByMember?.[member.id] || null;
+    if (hasCompleted || hasStudyRecord || (active?.day === event.day && removedIds.has(active.taskId))) {
+      throw new PublicError("已有打卡或学习记录的任务不能删除，请先保留该任务");
+    }
+  }
+
+  await db.collection("members").doc(member.id).update({
     taskOverrides: overrides,
     updatedAt: Date.now(),
-  };
-  if (repeatProvided) {
-    update.recurringTasks = repeatDaily ? recurringTasks : command.remove();
-    update.recurringTasksSince = repeatDaily ? event.day : command.remove();
-  }
-  await db.collection("members").doc(member.id).update(update);
-
-  const rows = await db.collection("checkins")
-    .where({ groupId: GROUP_ID, day: event.day })
-    .limit(100)
-    .get();
-  const validIds = new Set(tasks.map((task) => task.id));
-  await Promise.all((rows.data || [])
-    .filter((row) => row.memberId === member.id && !validIds.has(row.taskId || row.task))
-    .map((row) => db.collection("checkins").doc(row._id || row.id).remove()));
+  });
   await markFocusSummaryChanged();
-  return { tasks, repeatDaily: repeatProvided ? repeatDaily : Array.isArray(member.recurringTasks) };
+  return { tasks };
+}
+
+async function saveTaskTemplate(event) {
+  if (!validDay(event.day)) throw new PublicError("日期格式错误");
+  const member = await readCurrentMember(event.token);
+  const template = cleanTaskInput(event.tasks, taskTemplateFor(member))
+    .filter((task) => task.kind !== "course");
+
+  // Saving the reusable template must not silently rewrite the visible 7-day plan.
+  // Snapshot only dates that were still automatic; explicit day edits stay untouched.
+  const overrides = { ...(member.taskOverrides || {}) };
+  for (const day of fixedPlanDays(event.day)) {
+    if (!Object.prototype.hasOwnProperty.call(overrides, day)) {
+      overrides[day] = tasksFor(member, day);
+    }
+  }
+  for (const oldDay of Object.keys(overrides).sort().reverse().slice(60)) delete overrides[oldDay];
+
+  await db.collection("members").doc(member.id).update({
+    taskTemplate: template,
+    taskTemplateSince: event.day,
+    taskOverrides: overrides,
+    updatedAt: Date.now(),
+  });
+  await markFocusSummaryChanged();
+  return { template };
+}
+
+async function applyTaskTemplate(event) {
+  if (!validDay(event.day)) throw new PublicError("日期格式错误");
+  if (event.scope !== "today" && event.scope !== "window") {
+    throw new PublicError("模板应用范围不正确");
+  }
+  const member = await readCurrentMember(event.token);
+  const targetDays = event.scope === "today" ? [event.day] : fixedPlanDays(event.day);
+  const overrides = { ...(member.taskOverrides || {}) };
+  const candidates = targetDays.map((day) => {
+    const currentTasks = tasksFor(member, day);
+    const candidateMember = { ...member, taskOverrides: { ...overrides, [day]: undefined } };
+    delete candidateMember.taskOverrides[day];
+    const nextTasks = tasksFor(candidateMember, day);
+    const nextIds = new Set(nextTasks.map((task) => task.id));
+    return {
+      day,
+      removedIds: new Set(currentTasks.filter((task) => !nextIds.has(task.id)).map((task) => task.id)),
+    };
+  });
+  const hasPossibleRemoval = candidates.some((candidate) => candidate.removedIds.size > 0);
+  const protectedDays = new Set();
+
+  if (hasPossibleRemoval) {
+    const [rows, presence, focusState] = await Promise.all([
+      readCheckins(GROUP_ID, targetDays[0], targetDays[targetDays.length - 1]),
+      loadFocusPresence(MEMBER_DEFINITIONS, event.day),
+      loadFocusState(member, event.day),
+    ]);
+    for (const candidate of candidates) {
+      if (!candidate.removedIds.size) continue;
+      const completed = rows.some((row) => (
+        row.memberId === member.id
+        && row.day === candidate.day
+        && candidate.removedIds.has(row.taskId || row.task)
+      ));
+      const studied = (focusState.days?.[candidate.day]?.segments || []).some((segment) => (
+        candidate.removedIds.has(segment.taskId)
+      ));
+      const active = presence.activeByMember?.[member.id] || null;
+      if (completed || studied || (active?.day === candidate.day && candidate.removedIds.has(active.taskId))) {
+        protectedDays.add(candidate.day);
+      }
+    }
+  }
+
+  const appliedDays = [];
+  for (const day of targetDays) {
+    if (protectedDays.has(day)) continue;
+    delete overrides[day];
+    appliedDays.push(day);
+  }
+  if (appliedDays.length) {
+    await db.collection("members").doc(member.id).update({
+      taskOverrides: overrides,
+      updatedAt: Date.now(),
+    });
+    await markFocusSummaryChanged();
+  }
+  return { appliedDays, skippedDays: Array.from(protectedDays) };
 }
 
 async function resetTasks(event) {
@@ -1161,6 +1256,10 @@ exports.main = async (event) => {
         return success(await deferCourseTask(event));
       case "saveTasks":
         return success(await saveTasks(event));
+      case "saveTaskTemplate":
+        return success(await saveTaskTemplate(event));
+      case "applyTaskTemplate":
+        return success(await applyTaskTemplate(event));
       case "resetTasks":
         return success(await resetTasks(event));
       case "startFocus":
