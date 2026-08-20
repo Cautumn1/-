@@ -385,6 +385,7 @@ button { color: inherit; }
 .course-form label > small { color: #929bad; font-size: 9px; font-weight: 500; line-height: 1.5; }
 .course-directory-field { grid-column: 1 / -1; }
 .course-inline-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.course-inline-help { margin-top: -7px; color: #929bad; font-size: 9px; line-height: 1.5; }
 .weekly-course-fields { margin: 0; padding: 12px; border: 1px solid #e0e5ef; border-radius: 13px; }
 .weekly-course-fields legend { padding: 0 6px; color: #4d5972; font-size: 10px; font-weight: 800; }
 .weekly-course-fields > div { display: grid; grid-template-columns: repeat(7,minmax(0,1fr)); gap: 6px; }

@@ -199,6 +199,18 @@ function localDay(offset = 0, now = Date.now()) {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
+function calendarDay(offset = 0, now = Date.now()) {
+  const date = new Date(now + offset * DAY_MS);
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
 function displayDate(now = Date.now()) {
   return new Intl.DateTimeFormat("zh-CN", {
     timeZone: "Asia/Shanghai",
@@ -1594,14 +1606,20 @@ function CourseTemplateEditor({ template, planDays, busy, onBack, onClose, onSav
   onSave: (input: CourseTemplateInput) => Promise<void>;
   onDelete: (courseId: string, effectiveDay: string) => Promise<void>;
 }) {
+  const firstPlanDay = planDays[0]?.day ?? localDay();
+  const lastPlanDay = planDays[planDays.length - 1]?.day ?? shiftDay(firstPlanDay, 6);
+  const today = calendarDay();
+  const defaultEffectiveDay = today < firstPlanDay
+    ? firstPlanDay
+    : today > lastPlanDay ? lastPlanDay : today;
   const [name, setName] = useState(template?.name ?? "");
   const [structure, setStructure] = useState<"unit" | "sequence">(template?.structure ?? "unit");
   const [unitsText, setUnitsText] = useState(template?.units.map((unit) => `${unit.unit}:${unit.lessons}`).join("\n") ?? "");
   const [nextUnit, setNextUnit] = useState(String(template?.nextUnit ?? template?.units[0]?.unit ?? 1));
   const [nextLesson, setNextLesson] = useState(String(template?.nextLesson ?? 1));
   const [totalLessons, setTotalLessons] = useState(template?.totalLessons ? String(template.totalLessons) : "");
-  const [weeklyCounts, setWeeklyCounts] = useState<string[]>((template?.weeklyCounts ?? [1, 1, 1, 1, 1, 1, 2]).map(String));
-  const [effectiveDay, setEffectiveDay] = useState(localDay());
+  const [weeklyCounts, setWeeklyCounts] = useState<string[]>(template ? template.weeklyCounts.map(String) : Array(7).fill(""));
+  const [effectiveDay, setEffectiveDay] = useState(defaultEffectiveDay);
   const [autoContinue, setAutoContinue] = useState(template?.autoContinue ?? true);
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -1625,6 +1643,7 @@ function CourseTemplateEditor({ template, planDays, busy, onBack, onClose, onSav
       if (counts.some((value) => !Number.isInteger(value) || value < 0 || value > 6)) {
         throw new Error("每天课程数量应填写 0 到 6");
       }
+      if (!counts.some((value) => value > 0)) throw new Error("请至少填写一天的课程数量");
       const units = structure === "unit" ? parseUnitDirectory(unitsText) : [];
       if (structure === "unit" && !units.length) throw new Error("请填写课程单元目录");
       const lesson = Number(nextLesson);
@@ -1674,13 +1693,14 @@ function CourseTemplateEditor({ template, planDays, busy, onBack, onClose, onSav
             <>
               <label className="course-directory-field"><span>各单元课数</span><textarea value={unitsText} rows={4} placeholder={"每行一个，例如：\n6:7\n7:5"} onChange={(event) => setUnitsText(event.target.value)} /><small>格式为“单元:课数”，也支持用逗号分隔。</small></label>
               <div className="course-inline-fields">
-                <label><span>下一单元</span><input type="number" min="1" inputMode="numeric" value={nextUnit} onChange={(event) => setNextUnit(event.target.value)} /></label>
-                <label><span>下一课</span><input type="number" min="1" inputMode="numeric" value={nextLesson} onChange={(event) => setNextLesson(event.target.value)} /></label>
+                <label><span>起始单元</span><input type="number" min="1" inputMode="numeric" value={nextUnit} onChange={(event) => setNextUnit(event.target.value)} /></label>
+                <label><span>起始课次</span><input type="number" min="1" inputMode="numeric" value={nextLesson} onChange={(event) => setNextLesson(event.target.value)} /></label>
               </div>
+              <small className="course-inline-help">例如填写 6 和 4，第一项自动任务就是“第6单元第4课”。</small>
             </>
           ) : (
             <div className="course-inline-fields">
-              <label><span>下一课</span><input type="number" min="1" inputMode="numeric" value={nextLesson} onChange={(event) => setNextLesson(event.target.value)} /></label>
+              <label><span>起始课次</span><input type="number" min="1" inputMode="numeric" value={nextLesson} onChange={(event) => setNextLesson(event.target.value)} /></label>
               <label><span>总课数（可不填）</span><input type="number" min="1" inputMode="numeric" value={totalLessons} onChange={(event) => setTotalLessons(event.target.value)} /></label>
             </div>
           )}
@@ -1689,7 +1709,7 @@ function CourseTemplateEditor({ template, planDays, busy, onBack, onClose, onSav
             <label key={weekday}><span>{weekday}</span><input type="number" min="0" max="6" inputMode="numeric" value={weeklyCounts[index]} onChange={(event) => setWeeklyCounts((current) => current.map((value, itemIndex) => itemIndex === index ? event.target.value : value))} /><small>课</small></label>
           ))}</div></fieldset>
 
-          <label><span>生效日期</span><input type="date" min={localDay()} max={shiftDay(localDay(), 6)} value={effectiveDay} onChange={(event) => changeEffectiveDay(event.target.value)} /><small>只能选择当前7天窗口内的日期。</small></label>
+          <label><span>生效日期</span><input type="date" min={defaultEffectiveDay} max={lastPlanDay} value={effectiveDay} onChange={(event) => changeEffectiveDay(event.target.value)} /><small>默认是北京时间今天，只能选择当前7天窗口内的日期。</small></label>
           <button type="button" className={`repeat-task-toggle ${autoContinue ? "active" : ""}`} role="switch" aria-checked={autoContinue} onClick={() => setAutoContinue((current) => !current)}>
             <span><strong>自动续排未来7天</strong><small>{autoContinue ? "每天打开时自然滚动，不额外写入数据库" : "关闭后由你点击“一键生成未来7天”"}</small></span><i aria-hidden="true"><b /></i>
           </button>
