@@ -1,0 +1,1357 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { callStudyApi } from "./cloudbase";
+import quoteSource from "../../励志语录候选-1000条.md?raw";
+
+type Member = { id: string; userKey: "user1" | "user2"; name: string; color: string };
+type StudyTask = { id: string; title: string; completed: boolean };
+type PomodoroConfig = { focusMinutes: number; breakMinutes: number };
+type FocusSession = {
+  id: string;
+  memberId: string;
+  day: string;
+  taskId: string | null;
+  taskTitle: string;
+  startedAt: number;
+  timerMode?: "stopwatch" | "pomodoro";
+  pomodoro?: PomodoroConfig | null;
+  pausedAt?: number | null;
+  pausedDurationMs?: number;
+};
+type FocusSummary = {
+  serverNow: number;
+  summaryRevision?: string;
+  activeByMember: Record<string, FocusSession | null>;
+  todaySecondsByMember: Record<string, number>;
+  todayTaskSecondsByMember: Record<string, Record<string, number>>;
+};
+type FocusStatus = Pick<FocusSummary, "serverNow" | "summaryRevision" | "activeByMember">;
+type FocusStartResult = { session: FocusSession };
+type FocusResult = {
+  sessionId: string;
+  day: string;
+  taskId: string | null;
+  taskTitle: string;
+  durationSeconds: number;
+  wallDurationSeconds?: number;
+  pausedDurationSeconds?: number;
+  timerMode?: "stopwatch" | "pomodoro";
+  summaryRevision?: string;
+};
+type PomodoroSnapshot = { phase: "focus" | "break"; round: number; remainingSeconds: number };
+type AppData = {
+  me: Member;
+  members: Member[];
+  tasksByMember: Record<string, StudyTask[]>;
+  repeatDaily: boolean;
+  focus: FocusSummary;
+};
+
+type HistoryDay = { totalSeconds: number; completed: number; total: number; allDone: boolean };
+type HistoryData = {
+  days: Record<string, HistoryDay>;
+  totalSeconds: number;
+  studyDays: number;
+  completedDays: number;
+};
+type AppView = "dashboard" | "history";
+
+type ChangelogEntry = {
+  version: string;
+  date: string;
+  items: string[];
+};
+
+const TASK_TONES = ["blue", "purple", "cyan", "violet"];
+const STATUS_REFRESH_INTERVAL = 3 * 60 * 1000;
+const STATUS_REFRESH_THROTTLE = 60 * 1000;
+const STUDY_DAY_START_HOUR = 5;
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+const LAST_QUOTE_KEY = "study-last-motivational-quote";
+const LAST_SEEN_VERSION_KEY = "study-last-seen-version";
+const APP_VERSION = "1.6.0";
+const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "1.6.0",
+    date: "2026-08-06",
+    items: ["新增侧边栏，首页、历史统计和用户切换集中管理。", "新增历史学习时长月历，每天直接显示学习时长，完成当日全部任务会在日期上打勾。", "移除独立的本周坚持面板，并新增网站更新检测与刷新提示。"],
+  },
+  {
+    version: "1.5.0",
+    date: "2026-08-03",
+    items: ["任务编辑新增“每天重复”，可把当前计划设为每日模板。", "新增版本号与更新日志，今后每次更新后首次打开会自动展示。"],
+  },
+  {
+    version: "1.4.0",
+    date: "2026-08-03",
+    items: ["学习日调整为北京时间早上 5 点换日。", "页面跨 5 点或从后台返回时会自动切换到正确学习日。"],
+  },
+  {
+    version: "1.3.1",
+    date: "2026-08-02",
+    items: ["修复对方任务、完成进度和今日自习时长不会自动刷新的问题。", "保持轻量轮询，仅在数据真正变化时读取完整页面。"],
+  },
+  {
+    version: "1.3.0",
+    date: "2026-08-02",
+    items: ["任务编辑新增上移、下移排序。", "修复排序后完成记录与学习时长错位，任务全程保持稳定 ID。"],
+  },
+  {
+    version: "1.2.0",
+    date: "2026-08-02",
+    items: ["加入普通自习、番茄钟、自定义时长及暂停/继续。", "采用本地计时、3 分钟轻量同步和后台停止轮询的低消耗策略。", "加入 1000 条静态励志语录，每次刷新随机展示。"],
+  },
+  {
+    version: "1.1.0",
+    date: "2026-08-02",
+    items: ["支持双方编辑每日任务、打卡并查看彼此进度。", "强化双人自习状态和手机端身份切换体验。"],
+  },
+  {
+    version: "1.0.0",
+    date: "2026-08-01",
+    items: ["部署双人学习打卡网站到现有 CloudBase 环境。", "身份固定为蔡和刘，取消共享码与 PIN，直接选择身份进入。"],
+  },
+];
+const MOTIVATIONAL_QUOTES = Array.from(
+  quoteSource.matchAll(/^\d{4}\.\s+(.+)$/gm),
+  (match) => match[1].trim(),
+);
+
+function selectPageQuote() {
+  const fallback = "今天，也向目标靠近一点";
+  if (!MOTIVATIONAL_QUOTES.length) return fallback;
+
+  let previous = "";
+  try { previous = window.localStorage.getItem(LAST_QUOTE_KEY) ?? ""; } catch { /* Storage may be unavailable. */ }
+  const choices = MOTIVATIONAL_QUOTES.length > 1
+    ? MOTIVATIONAL_QUOTES.filter((quote) => quote !== previous)
+    : MOTIVATIONAL_QUOTES;
+  const quote = choices[Math.floor(Math.random() * choices.length)] ?? fallback;
+  try { window.localStorage.setItem(LAST_QUOTE_KEY, quote); } catch { /* Random selection still works without storage. */ }
+  return quote;
+}
+
+const PAGE_QUOTE = selectPageQuote();
+
+function studyDate(offset = 0, now = Date.now()) {
+  return new Date(now - STUDY_DAY_START_HOUR * HOUR_MS + offset * DAY_MS);
+}
+
+function localDay(offset = 0, now = Date.now()) {
+  const date = studyDate(offset, now);
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function displayDate(now = Date.now()) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    weekday: "long",
+  }).format(studyDate(0, now));
+}
+
+function shiftDay(day: string, offset: number) {
+  const date = new Date(`${day}T12:00:00+08:00`);
+  date.setDate(date.getDate() + offset);
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function currentMonth() {
+  return localDay().slice(0, 7);
+}
+
+function shiftMonth(month: string, offset: number) {
+  const date = new Date(`${month}-15T12:00:00+08:00`);
+  date.setMonth(date.getMonth() + offset);
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+  }).format(date);
+}
+
+function calendarRange(month: string) {
+  const first = `${month}-01`;
+  const firstDate = new Date(`${first}T12:00:00+08:00`);
+  const mondayLead = firstDate.getDay() === 0 ? 6 : firstDate.getDay() - 1;
+  const fromDay = shiftDay(first, -mondayLead);
+  return { fromDay, toDay: shiftDay(fromDay, 41) };
+}
+
+function monthTitle(month: string) {
+  const [year, value] = month.split("-");
+  return `${year} 年 ${Number(value)} 月`;
+}
+
+function millisecondsUntilNextStudyDay(now = Date.now()) {
+  const nextDay = localDay(1, now);
+  const nextBoundary = new Date(`${nextDay}T${String(STUDY_DAY_START_HOUR).padStart(2, "0")}:00:00+08:00`).getTime();
+  return Math.max(1000, nextBoundary - now + 50);
+}
+
+function elapsedSeconds(session: FocusSession | null | undefined, now: number) {
+  if (!session) return 0;
+  const endedAt = session.pausedAt ?? now;
+  const pausedDurationMs = Math.max(0, session.pausedDurationMs ?? 0);
+  return Math.max(0, Math.floor((endedAt - session.startedAt - pausedDurationMs) / 1000));
+}
+
+function pomodoroSnapshot(session: FocusSession | null | undefined, now: number): PomodoroSnapshot | null {
+  if (!session || session.timerMode !== "pomodoro" || !session.pomodoro) return null;
+  const focusSeconds = Math.max(1, session.pomodoro.focusMinutes) * 60;
+  const breakSeconds = Math.max(1, session.pomodoro.breakMinutes) * 60;
+  const cycleSeconds = focusSeconds + breakSeconds;
+  const elapsed = elapsedSeconds(session, now);
+  const position = elapsed % cycleSeconds;
+  const round = Math.floor(elapsed / cycleSeconds) + 1;
+  return position < focusSeconds
+    ? { phase: "focus", round, remainingSeconds: focusSeconds - position }
+    : { phase: "break", round, remainingSeconds: cycleSeconds - position };
+}
+
+function activeStudySeconds(session: FocusSession | null | undefined, now: number) {
+  const elapsed = elapsedSeconds(session, now);
+  if (!session || session.timerMode !== "pomodoro" || !session.pomodoro) return elapsed;
+  const focusSeconds = Math.max(1, session.pomodoro.focusMinutes) * 60;
+  const breakSeconds = Math.max(1, session.pomodoro.breakMinutes) * 60;
+  const cycleSeconds = focusSeconds + breakSeconds;
+  return Math.floor(elapsed / cycleSeconds) * focusSeconds + Math.min(elapsed % cycleSeconds, focusSeconds);
+}
+
+function formatClock(totalSeconds: number) {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = seconds % 60;
+  return hours
+    ? `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`
+    : `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+}
+
+function formatStudyTime(totalSeconds: number) {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  if (seconds < 60) return seconds ? "不足 1 分钟" : "0 分钟";
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (hours && minutes) return `${hours} 小时 ${minutes} 分钟`;
+  if (hours) return `${hours} 小时`;
+  return `${minutes} 分钟`;
+}
+
+export default function Home() {
+  const [token, setToken] = useState<string | null>(null);
+  const [data, setData] = useState<AppData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busyTask, setBusyTask] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [showLogin, setShowLogin] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [focusPicker, setFocusPicker] = useState(false);
+  const [focusBusy, setFocusBusy] = useState(false);
+  const [focusResult, setFocusResult] = useState<FocusResult | null>(null);
+  const [view, setView] = useState<AppView>("dashboard");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [availableVersion, setAvailableVersion] = useState<string | null>(null);
+  const [showChangelog, setShowChangelog] = useState(() => {
+    try { return window.localStorage.getItem(LAST_SEEN_VERSION_KEY) !== APP_VERSION; }
+    catch { return true; }
+  });
+  const [now, setNow] = useState(() => Date.now());
+  const lastFocusRefresh = useRef(0);
+  const summaryRevision = useRef("");
+  const loadedDay = useRef("");
+  const dismissedVersion = useRef("");
+
+  const checkForUpdate = useCallback(async () => {
+    if (document.visibilityState !== "visible") return;
+    try {
+      const response = await fetch(`/version.json?t=${Date.now()}`, { cache: "no-store" });
+      if (!response.ok) return;
+      const result = await response.json() as { version?: unknown };
+      const remoteVersion = typeof result.version === "string" ? result.version.trim() : "";
+      if (remoteVersion && remoteVersion !== APP_VERSION && remoteVersion !== dismissedVersion.current) {
+        setAvailableVersion(remoteVersion);
+      }
+    } catch { /* A later check will retry without interrupting study. */ }
+  }, []);
+
+  const load = useCallback(async (identity: string) => {
+    const requestedDay = localDay();
+    const nextData = await callStudyApi<AppData>("getData", {
+      token: identity,
+      day: requestedDay,
+    });
+    lastFocusRefresh.current = Date.now();
+    summaryRevision.current = nextData.focus.summaryRevision ?? "";
+    loadedDay.current = requestedDay;
+    setData(nextData);
+  }, []);
+
+  const refreshFocus = useCallback(async (identity: string) => {
+    const requestedDay = localDay();
+    if (loadedDay.current && loadedDay.current !== requestedDay) {
+      await load(identity);
+      return;
+    }
+    const status = await callStudyApi<FocusStatus>("getFocusStatus", {
+      token: identity,
+      day: requestedDay,
+    });
+    lastFocusRefresh.current = Date.now();
+    if ((status.summaryRevision ?? "") !== summaryRevision.current) {
+      await load(identity);
+      return;
+    }
+    setData((current) => current ? {
+      ...current,
+      focus: { ...current.focus, ...status, activeByMember: status.activeByMember },
+    } : current);
+  }, [load]);
+
+  useEffect(() => {
+    if (!token) return;
+    let boundaryTimer: number | null = null;
+    let cancelled = false;
+    const scheduleBoundaryRefresh = () => {
+      boundaryTimer = window.setTimeout(async () => {
+        setNow(Date.now());
+        if (document.visibilityState === "visible") {
+          try { await load(token); } catch { /* The normal refresh loop will retry. */ }
+        }
+        if (!cancelled) scheduleBoundaryRefresh();
+      }, millisecondsUntilNextStudyDay());
+    };
+    scheduleBoundaryRefresh();
+    return () => {
+      cancelled = true;
+      if (boundaryTimer !== null) window.clearTimeout(boundaryTimer);
+    };
+  }, [load, token]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const saved = window.localStorage.getItem("study-session");
+      if (!saved) {
+        setShowLogin(true);
+        setLoading(false);
+        return;
+      }
+      setToken(saved);
+      load(saved)
+        .catch((err) => {
+          window.localStorage.removeItem("study-session");
+          setToken(null);
+          setError(err instanceof Error ? err.message : "身份已失效，请重新选择");
+          setShowLogin(true);
+        })
+        .finally(() => setLoading(false));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  useEffect(() => {
+    void checkForUpdate();
+    const interval = window.setInterval(() => { void checkForUpdate(); }, STATUS_REFRESH_INTERVAL);
+    const onVisibility = () => { if (document.visibilityState === "visible") void checkForUpdate(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [checkForUpdate]);
+
+  const hasRunningClock = Boolean(data && Object.values(data.focus.activeByMember)
+    .some((session) => session && !session.pausedAt));
+
+  useEffect(() => {
+    if (!token) return;
+    let timer: number | null = null;
+    const configureClock = () => {
+      setNow(Date.now());
+      if (timer !== null) window.clearInterval(timer);
+      timer = document.visibilityState === "visible" && hasRunningClock
+        ? window.setInterval(() => setNow(Date.now()), 1000)
+        : null;
+    };
+    configureClock();
+    document.addEventListener("visibilitychange", configureClock);
+    return () => {
+      if (timer !== null) window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", configureClock);
+    };
+  }, [hasRunningClock, token]);
+
+  const myTasks = data ? data.tasksByMember[data.me.id] ?? [] : [];
+  const partner = data?.members.find((member) => member.id !== data.me.id);
+  const partnerTasks = partner && data ? data.tasksByMember[partner.id] ?? [] : [];
+  const completedCount = myTasks.filter((task) => task.completed).length;
+  const partnerCompleted = partnerTasks.filter((task) => task.completed).length;
+  const progress = myTasks.length ? Math.round((completedCount / myTasks.length) * 100) : 0;
+  const myActive = data?.focus.activeByMember[data.me.id] ?? null;
+  const partnerActive = partner ? data?.focus.activeByMember[partner.id] ?? null : null;
+  const myElapsed = activeStudySeconds(myActive, now);
+  const partnerElapsed = activeStudySeconds(partnerActive, now);
+  const myPomodoro = pomodoroSnapshot(myActive, now);
+  const partnerPomodoro = pomodoroSnapshot(partnerActive, now);
+  const today = localDay();
+  const myTodaySeconds = data
+    ? (data.focus.todaySecondsByMember[data.me.id] ?? 0) + (myActive?.day === today ? myElapsed : 0)
+    : 0;
+  const partnerTodaySeconds = partner && data
+    ? (data.focus.todaySecondsByMember[partner.id] ?? 0) + (partnerActive?.day === today ? partnerElapsed : 0)
+    : 0;
+  const myPaused = Boolean(myActive?.pausedAt);
+  const partnerPaused = Boolean(partnerActive?.pausedAt);
+  const companionMessage = myActive && partnerActive
+    ? myPaused && partnerPaused
+      ? "你们都暂停了，稍作休息"
+      : myPaused
+        ? `${partner?.name ?? "对方"}仍在学习，准备好就继续`
+        : partnerPaused
+          ? `${partner?.name ?? "对方"}暂时暂停，你正在继续前进`
+          : "你们正在一起专注"
+    : partnerActive
+      ? partnerPaused
+        ? `${partner?.name ?? "对方"}已暂停，暂时休息一下`
+        : partnerPomodoro?.phase === "break"
+        ? `${partner?.name ?? "对方"}正在番茄钟休息中`
+        : `${partner?.name ?? "对方"}已经开始了，加入 Ta 吧`
+      : myActive
+        ? myPaused
+          ? "已暂停，准备好后继续学习"
+          : `你正在等${partner?.name ?? "对方"}一起加入`
+        : "随时开始，对方会看到你的学习状态";
+
+  useEffect(() => {
+    if (!token) return;
+    let refreshing = false;
+    const refreshWhenUseful = async () => {
+      if (document.visibilityState !== "visible" || refreshing) return;
+      const dayChanged = Boolean(loadedDay.current && loadedDay.current !== localDay());
+      if (!dayChanged && Date.now() - lastFocusRefresh.current < STATUS_REFRESH_THROTTLE) return;
+      refreshing = true;
+      try { await refreshFocus(token); } catch { /* Keep the last known status until the next user action. */ }
+      finally { refreshing = false; }
+    };
+    const interval = window.setInterval(refreshWhenUseful, STATUS_REFRESH_INTERVAL);
+    const onVisibility = () => { if (document.visibilityState === "visible") void refreshWhenUseful(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", refreshWhenUseful);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", refreshWhenUseful);
+    };
+  }, [refreshFocus, token]);
+
+  async function toggleTask(taskId: string) {
+    if (!token || busyTask) return;
+    setBusyTask(taskId);
+    setError("");
+    try {
+      await callStudyApi<{ completed: boolean }>("toggleCheckin", {
+        token,
+        day: localDay(),
+        taskId,
+      });
+      await load(token);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "操作失败");
+    } finally {
+      setBusyTask(null);
+    }
+  }
+
+  async function saveTasks(tasks: Array<{ id: string; title: string }>, repeatDaily: boolean) {
+    if (!token) return;
+    setError("");
+    await callStudyApi("saveTasks", { token, day: localDay(), tasks, repeatDaily });
+    await load(token);
+    setEditing(false);
+  }
+
+  async function resetTasks() {
+    if (!token) return;
+    setError("");
+    await callStudyApi("resetTasks", { token, day: localDay() });
+    await load(token);
+    setEditing(false);
+  }
+
+  async function startFocus(taskId: string | null, pomodoro: PomodoroConfig | null) {
+    if (!token || focusBusy) return;
+    setFocusBusy(true);
+    setError("");
+    try {
+      const result = await callStudyApi<FocusStartResult>("startFocus", {
+        token,
+        day: localDay(),
+        taskId,
+        timerMode: pomodoro ? "pomodoro" : "stopwatch",
+        focusMinutes: pomodoro?.focusMinutes,
+        breakMinutes: pomodoro?.breakMinutes,
+      });
+      lastFocusRefresh.current = Date.now();
+      setData((current) => current ? {
+        ...current,
+        focus: {
+          ...current.focus,
+          serverNow: Date.now(),
+          activeByMember: { ...current.focus.activeByMember, [current.me.id]: result.session },
+        },
+      } : current);
+      setNow(Date.now());
+      setFocusPicker(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "开始自习失败");
+    } finally {
+      setFocusBusy(false);
+    }
+  }
+
+  async function stopFocus() {
+    if (!token || focusBusy) return;
+    setFocusBusy(true);
+    setError("");
+    try {
+      const result = await callStudyApi<FocusResult>("stopFocus", { token });
+      lastFocusRefresh.current = Date.now();
+      if (result.summaryRevision) summaryRevision.current = result.summaryRevision;
+      setData((current) => {
+        if (!current) return current;
+        const memberId = current.me.id;
+        const isToday = result.day === localDay();
+        const taskKey = result.taskId || "free";
+        const todaySecondsByMember = isToday ? {
+          ...current.focus.todaySecondsByMember,
+          [memberId]: (current.focus.todaySecondsByMember[memberId] ?? 0) + result.durationSeconds,
+        } : current.focus.todaySecondsByMember;
+        const memberTaskSeconds = current.focus.todayTaskSecondsByMember[memberId] ?? {};
+        const todayTaskSecondsByMember = isToday ? {
+          ...current.focus.todayTaskSecondsByMember,
+          [memberId]: {
+            ...memberTaskSeconds,
+            [taskKey]: (memberTaskSeconds[taskKey] ?? 0) + result.durationSeconds,
+          },
+        } : current.focus.todayTaskSecondsByMember;
+        return {
+          ...current,
+          focus: {
+            ...current.focus,
+            serverNow: Date.now(),
+            summaryRevision: result.summaryRevision ?? current.focus.summaryRevision,
+            activeByMember: { ...current.focus.activeByMember, [memberId]: null },
+            todaySecondsByMember,
+            todayTaskSecondsByMember,
+          },
+        };
+      });
+      setFocusResult(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "结束自习失败");
+    } finally {
+      setFocusBusy(false);
+    }
+  }
+
+  async function setFocusPaused(paused: boolean) {
+    if (!token || focusBusy || !myActive) return;
+    setFocusBusy(true);
+    setError("");
+    try {
+      const result = await callStudyApi<FocusStartResult>("setFocusPaused", { token, paused });
+      lastFocusRefresh.current = Date.now();
+      setData((current) => current ? {
+        ...current,
+        focus: {
+          ...current.focus,
+          serverNow: Date.now(),
+          activeByMember: { ...current.focus.activeByMember, [current.me.id]: result.session },
+        },
+      } : current);
+      setNow(Date.now());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : paused ? "暂停失败" : "继续失败");
+    } finally {
+      setFocusBusy(false);
+    }
+  }
+
+  async function completeFocusTask(taskId: string) {
+    if (!token || focusBusy) return;
+    const task = myTasks.find((item) => item.id === taskId);
+    if (!task || task.completed) {
+      setFocusResult(null);
+      return;
+    }
+    setFocusBusy(true);
+    setError("");
+    try {
+      await callStudyApi("toggleCheckin", { token, day: localDay(), taskId });
+      await load(token);
+      setFocusResult(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "完成打卡失败");
+    } finally {
+      setFocusBusy(false);
+    }
+  }
+
+  function logout() {
+    window.localStorage.removeItem("study-session");
+    setToken(null);
+    setData(null);
+    setView("dashboard");
+    setSidebarOpen(false);
+    setEditing(false);
+    setFocusPicker(false);
+    setFocusResult(null);
+    setShowLogin(true);
+  }
+
+  function navigate(nextView: AppView) {
+    setView(nextView);
+    setSidebarOpen(false);
+  }
+
+  function refreshForUpdate() {
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set("update", String(Date.now()));
+    window.location.replace(nextUrl.toString());
+  }
+
+  function dismissUpdate() {
+    dismissedVersion.current = availableVersion ?? "";
+    setAvailableVersion(null);
+  }
+
+  function closeChangelog() {
+    const isQaPreview = new URLSearchParams(window.location.search).has("qa");
+    if (!isQaPreview) {
+      try { window.localStorage.setItem(LAST_SEEN_VERSION_KEY, APP_VERSION); } catch { /* It may reappear if storage is unavailable. */ }
+    }
+    setShowChangelog(false);
+  }
+
+  if (loading) {
+    return <div className="loading-screen"><span className="loader" />正在加载今天的学习计划…</div>;
+  }
+
+  return (
+    <main className="app-shell">
+      <Sidebar
+        member={data?.me}
+        activeView={view}
+        open={sidebarOpen}
+        onNavigate={navigate}
+        onSwitchUser={logout}
+        onClose={() => setSidebarOpen(false)}
+      />
+      <button className="mobile-menu-button" onClick={() => setSidebarOpen(true)} aria-label="打开侧边栏">☰</button>
+      {sidebarOpen && <button className="sidebar-scrim" onClick={() => setSidebarOpen(false)} aria-label="关闭侧边栏" />}
+
+      <div className="app-page">
+      {view === "dashboard" ? <section className="content">
+        <header className="hero">
+          <div>
+            <span className="eyebrow">DAILY FOCUS</span>
+            <h1>{PAGE_QUOTE}</h1>
+            <div className="meta-row">
+              <span>▣&nbsp; {displayDate()}</span>
+            </div>
+          </div>
+        </header>
+
+        {error && <div className="error-banner" role="alert">{error}</div>}
+
+        {data && (
+          <section className="focus-zone" aria-label="双人自习室">
+            <div className="focus-zone-title">
+              <div><span>STUDY TOGETHER</span><h2>你们的自习室</h2></div>
+              <p>{companionMessage}</p>
+            </div>
+            <div className="focus-stage">
+              <FocusPanel
+                active={myActive}
+                elapsed={myElapsed}
+                pomodoro={myPomodoro}
+                todaySeconds={myTodaySeconds}
+                busy={focusBusy}
+                onStart={() => setFocusPicker(true)}
+                onPauseChange={setFocusPaused}
+                onStop={stopFocus}
+              />
+              <PartnerFocusPanel
+                member={partner}
+                active={partnerActive}
+                elapsed={partnerElapsed}
+                pomodoro={partnerPomodoro}
+                todaySeconds={partnerTodaySeconds}
+                completed={partnerCompleted}
+                total={partnerTasks.length}
+                onRefresh={() => { if (token) return load(token); }}
+              />
+            </div>
+          </section>
+        )}
+
+        <div className="dashboard-grid">
+          <section className="task-column" aria-label="我的今日学习任务">
+            <div className="task-section-title">
+              <div><span>我的计划</span><h2>{data?.me.name ?? "我"}的今日任务</h2></div>
+              <button className="edit-task-button" onClick={() => setEditing(true)}>✎ 编辑任务</button>
+            </div>
+            <section className="compact-progress" aria-label={`今日任务已完成 ${completedCount} 项，共 ${myTasks.length} 项`}>
+              <div><span>今日完成</span><strong>{completedCount}/{myTasks.length}</strong><small>{progress}%</small></div>
+              <div className="compact-progress-track"><i style={{ width: `${progress}%` }} /></div>
+            </section>
+            {myTasks.length ? (
+              <section className="task-grid">
+                {myTasks.map((task, index) => {
+                  const tone = TASK_TONES[index % TASK_TONES.length];
+                  const recordedStudySeconds = data?.focus.todayTaskSecondsByMember[data.me.id]?.[task.id] ?? 0;
+                  const taskStudySeconds = recordedStudySeconds
+                    + (myActive?.day === today && myActive.taskId === task.id ? myElapsed : 0);
+                  return (
+                    <button
+                      key={task.id}
+                      className={`task-card ${tone} ${task.completed ? "done" : ""}`}
+                      onClick={() => toggleTask(task.id)}
+                      disabled={!data || busyTask === task.id}
+                      aria-pressed={task.completed}
+                    >
+                      <span className="task-head">
+                        <span className="task-icon">{index + 1}</span>
+                        <span>
+                          <strong>{task.title}</strong>
+                          {taskStudySeconds > 0 && <small className="task-study-time">今日学习 {formatStudyTime(taskStudySeconds)}</small>}
+                        </span>
+                      </span>
+                      <span className="task-action">
+                        <span className="check">{busyTask === task.id ? "···" : task.completed ? "✓" : ""}</span>
+                        <span>{task.completed ? "已完成" : "点击完成打卡"}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </section>
+            ) : (
+              <section className="empty-task-state">
+                <span>＋</span><h3>今天还没有学习任务</h3><p>点击“编辑任务”，添加今天准备完成的学习内容。</p>
+                <button onClick={() => setEditing(true)}>添加今日任务</button>
+              </section>
+            )}
+          </section>
+
+          <aside className="right-rail">
+            <section className="panel partner-task-panel">
+              <div className="partner-heading">
+                <div className="partner-avatar" style={{ background: partner?.color ?? "#7c5cfc" }}>{partner?.name.slice(-1) ?? "Ta"}</div>
+                <div><small>对方的今日计划</small><h2>{partner?.name ?? "对方"}</h2></div>
+                <b>{partnerCompleted}/{partnerTasks.length}</b>
+              </div>
+              <div className="partner-task-list">
+                {partnerTasks.length ? partnerTasks.map((task) => {
+                  const recordedStudySeconds = partner && data
+                    ? data.focus.todayTaskSecondsByMember[partner.id]?.[task.id] ?? 0
+                    : 0;
+                  const taskStudySeconds = recordedStudySeconds
+                    + (partnerActive?.day === today && partnerActive.taskId === task.id ? partnerElapsed : 0);
+                  return (
+                    <div key={task.id} className={task.completed ? "complete" : ""}>
+                      <i>{task.completed ? "✓" : ""}</i><span>{task.title}</span>
+                      {taskStudySeconds > 0 && <small>{formatStudyTime(taskStudySeconds)}</small>}
+                    </div>
+                  );
+                }) : <p className="partner-empty">对方今天还没有添加任务。</p>}
+              </div>
+              <button className="refresh-button" onClick={() => token && load(token)}>↻ 刷新对方任务</button>
+            </section>
+
+          </aside>
+        </div>
+      </section> : token && data ? (
+        <HistoryCalendar
+          token={token}
+          member={data.me}
+          active={myActive}
+          activeSeconds={myElapsed}
+          refreshKey={data.focus.summaryRevision ?? ""}
+        />
+      ) : null}
+      </div>
+
+      {data && myActive && (
+        <div className={`focus-active-bar ${myPaused ? "paused" : ""}`} role="status">
+          <span>
+            <i />
+            <small>{myPaused ? `已暂停 · ${myActive.taskTitle}` : myPomodoro ? `${myPomodoro.phase === "focus" ? "专注" : "休息"} · ${myActive.taskTitle}` : myActive.taskTitle}</small>
+            <strong>{formatClock(myPomodoro?.remainingSeconds ?? myElapsed)}</strong>
+          </span>
+          <div className="focus-active-actions">
+            <button className="pause" onClick={() => setFocusPaused(!myPaused)} disabled={focusBusy}>{myPaused ? "继续" : "暂停"}</button>
+            <button className="stop" onClick={stopFocus} disabled={focusBusy}>{focusBusy ? "处理中…" : "结束"}</button>
+          </div>
+        </div>
+      )}
+
+      {showLogin && (
+        <IdentityModal
+          onSuccess={async (identity) => {
+            window.localStorage.setItem("study-session", identity);
+            setToken(identity);
+            setLoading(true);
+            setShowLogin(false);
+            try { await load(identity); } finally { setLoading(false); }
+          }}
+        />
+      )}
+
+      {editing && data && (
+        <TaskEditor
+          member={data.me}
+          tasks={myTasks}
+          repeatDaily={data.repeatDaily}
+          onClose={() => setEditing(false)}
+          onSave={saveTasks}
+          onReset={resetTasks}
+        />
+      )}
+
+      {focusPicker && data && (
+        <FocusPicker
+          tasks={myTasks}
+          busy={focusBusy}
+          onClose={() => !focusBusy && setFocusPicker(false)}
+          onStart={startFocus}
+        />
+      )}
+
+      {focusResult && (
+        <FocusResultModal
+          result={focusResult}
+          canCheckin={Boolean(focusResult.taskId && myTasks.some((task) => task.id === focusResult.taskId && !task.completed))}
+          busy={focusBusy}
+          onClose={() => setFocusResult(null)}
+          onCheckin={() => focusResult.taskId && completeFocusTask(focusResult.taskId)}
+        />
+      )}
+
+      {showChangelog && <ChangelogModal entries={CHANGELOG} onClose={closeChangelog} />}
+      {availableVersion && (
+        <UpdateAvailableModal version={availableVersion} onRefresh={refreshForUpdate} onLater={dismissUpdate} />
+      )}
+    </main>
+  );
+}
+
+function Sidebar({ member, activeView, open, onNavigate, onSwitchUser, onClose }: {
+  member?: Member;
+  activeView: AppView;
+  open: boolean;
+  onNavigate: (view: AppView) => void;
+  onSwitchUser: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <aside className={`app-sidebar ${open ? "open" : ""}`} aria-label="主导航">
+      <div className="sidebar-brand">
+        <span className="brand-mark"><i /><i /><i /></span>
+        <span><strong>一起进步</strong><small>双人学习打卡</small></span>
+        <button onClick={onClose} aria-label="关闭侧边栏">×</button>
+      </div>
+      <nav className="sidebar-nav">
+        <button className={activeView === "dashboard" ? "active" : ""} onClick={() => onNavigate("dashboard")}>
+          <i>⌂</i><span><strong>今日学习</strong><small>自习、任务与对方状态</small></span>
+        </button>
+        <button className={activeView === "history" ? "active" : ""} onClick={() => onNavigate("history")}>
+          <i>▦</i><span><strong>历史统计</strong><small>每日时长与完成记录</small></span>
+        </button>
+      </nav>
+      <div className="sidebar-spacer" />
+      <div className="sidebar-version">VERSION {APP_VERSION}</div>
+      {member && (
+        <button className="sidebar-user" onClick={onSwitchUser} aria-label={`当前身份${member.name}，切换用户`}>
+          <span className="avatar" style={{ background: member.color }}>{member.name.slice(-1)}</span>
+          <span><small>当前身份</small><strong>{member.name}</strong></span>
+          <b>切换</b>
+        </button>
+      )}
+    </aside>
+  );
+}
+
+function compactHistoryTime(seconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(seconds));
+  if (safeSeconds <= 0) return "0 分钟";
+  if (safeSeconds < 60) return "不足 1 分";
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  if (hours && minutes) return `${hours} 时 ${minutes} 分`;
+  if (hours) return `${hours} 小时`;
+  return `${minutes} 分钟`;
+}
+
+function HistoryCalendar({ token, member, active, activeSeconds, refreshKey }: {
+  token: string;
+  member: Member;
+  active: FocusSession | null;
+  activeSeconds: number;
+  refreshKey: string;
+}) {
+  const [month, setMonth] = useState(currentMonth);
+  const [history, setHistory] = useState<HistoryData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState("");
+  const range = useMemo(() => calendarRange(month), [month]);
+  const calendarDays = useMemo(() => Array.from({ length: 42 }, (_, index) => shiftDay(range.fromDay, index)), [range]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setMessage("");
+    callStudyApi<HistoryData>("getStudyHistory", { token, month, fromDay: range.fromDay, toDay: range.toDay })
+      .then((result) => { if (!cancelled) setHistory(result); })
+      .catch((err) => { if (!cancelled) setMessage(err instanceof Error ? err.message : "历史统计加载失败"); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [member.id, month, range.fromDay, range.toDay, refreshKey, token]);
+
+  const today = localDay();
+  const canGoNext = month < currentMonth();
+  const liveSeconds = active?.day === today ? activeSeconds : 0;
+  const monthTotalSeconds = (history?.totalSeconds ?? 0) + (today.startsWith(month) ? liveSeconds : 0);
+  const monthStudyDays = (history?.studyDays ?? 0) + (
+    today.startsWith(month) && liveSeconds > 0 && !(history?.days[today]?.totalSeconds) ? 1 : 0
+  );
+
+  return (
+    <section className="content history-page" aria-label="历史学习时长统计">
+      <header className="history-hero">
+        <div><span className="eyebrow">STUDY HISTORY</span><h1>{member.name}的学习日历</h1><p>每天的有效学习时长会自动汇总；完成当天全部任务的日期会显示绿色勾选。</p></div>
+        <div className="month-switcher">
+          <button onClick={() => setMonth((value) => shiftMonth(value, -1))} aria-label="上一个月">‹</button>
+          <strong>{monthTitle(month)}</strong>
+          <button onClick={() => setMonth((value) => shiftMonth(value, 1))} disabled={!canGoNext} aria-label="下一个月">›</button>
+        </div>
+      </header>
+
+      {message && <div className="error-banner" role="alert">{message}</div>}
+      <div className="history-summary">
+        <article><small>本月学习</small><strong>{compactHistoryTime(monthTotalSeconds)}</strong></article>
+        <article><small>有学习记录</small><strong>{monthStudyDays}<b> 天</b></strong></article>
+        <article><small>全部任务完成</small><strong>{history?.completedDays ?? 0}<b> 天</b></strong></article>
+      </div>
+
+      <section className={`calendar-panel ${loading ? "loading" : ""}`}>
+        <div className="calendar-weekdays">{"一二三四五六日".split("").map((label) => <span key={label}>{label}</span>)}</div>
+        <div className="calendar-grid">
+          {calendarDays.map((day) => {
+            const entry = history?.days[day];
+            const displayedSeconds = (entry?.totalSeconds ?? 0) + (day === today ? liveSeconds : 0);
+            const inMonth = day.startsWith(month);
+            const future = day > today;
+            const dayNumber = Number(day.slice(-2));
+            return (
+              <article key={day} className={`${inMonth ? "" : "outside"} ${day === today ? "today" : ""} ${entry?.allDone ? "all-done" : ""}`} aria-label={`${day}，${future ? "尚未到来" : compactHistoryTime(displayedSeconds)}${entry?.allDone ? "，全部任务已完成" : ""}`}>
+                <header><time dateTime={day}>{dayNumber}</time>{entry?.allDone && <i title="当天全部任务已完成">✓</i>}</header>
+                {!future && <strong>{compactHistoryTime(displayedSeconds)}</strong>}
+                {!future && entry && entry.total > 0 && <small>{entry.completed}/{entry.total} 项</small>}
+              </article>
+            );
+          })}
+        </div>
+        {loading && <div className="calendar-loading"><span className="loader" />正在读取学习记录…</div>}
+      </section>
+      <div className="calendar-legend"><span><i>✓</i> 当天全部任务完成</span><span>学习日按北京时间早上 5 点划分</span></div>
+    </section>
+  );
+}
+
+function UpdateAvailableModal({ version, onRefresh, onLater }: { version: string; onRefresh: () => void; onLater: () => void }) {
+  return (
+    <div className="modal-backdrop update-backdrop">
+      <section className="login-card update-card" role="dialog" aria-modal="true" aria-labelledby="update-title">
+        <span className="update-icon">↻</span>
+        <small>NEW VERSION · v{version}</small>
+        <h2 id="update-title">网站有新更新</h2>
+        <p>请刷新当前网址以加载最新功能。刷新不会影响已经保存的任务、打卡或学习时长。</p>
+        <div className="editor-actions">
+          <button className="secondary-button" onClick={onLater}>稍后提醒</button>
+          <button className="primary-button" onClick={onRefresh}>立即刷新更新</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function FocusPanel({ active, elapsed, pomodoro, todaySeconds, busy, onStart, onPauseChange, onStop }: {
+  active: FocusSession | null;
+  elapsed: number;
+  pomodoro: PomodoroSnapshot | null;
+  todaySeconds: number;
+  busy: boolean;
+  onStart: () => void;
+  onPauseChange: (paused: boolean) => Promise<void>;
+  onStop: () => Promise<void>;
+}) {
+  const paused = Boolean(active?.pausedAt);
+  return (
+    <section className={`panel focus-panel ${active ? "active" : ""} ${pomodoro?.phase === "break" ? "break" : ""} ${paused ? "paused" : ""}`}>
+      <div className="focus-panel-heading">
+        <div><span>FOCUS MODE</span><h2>自习模式</h2></div>
+        {active && <i className="focus-live-dot" />}
+      </div>
+      {active ? (
+        <>
+          <small className="focus-state-label">
+            {paused
+              ? pomodoro
+                ? `第 ${pomodoro.round} 轮 · ${pomodoro.phase === "focus" ? "专注已暂停" : "休息已暂停"}`
+                : "自习已暂停"
+              : pomodoro
+                ? `第 ${pomodoro.round} 轮 · ${pomodoro.phase === "focus" ? "专注中" : "休息中"}`
+                : "正在学习"}
+          </small>
+          <strong className="focus-task-title">{active.taskTitle}</strong>
+          <div className="focus-clock">{formatClock(pomodoro?.remainingSeconds ?? elapsed)}</div>
+          {pomodoro && <small className="focus-cycle-note">专注 {active.pomodoro?.focusMinutes} 分钟 · 休息 {active.pomodoro?.breakMinutes} 分钟</small>}
+          <div className="focus-total focus-total-active"><small>今日自习</small><strong>{formatStudyTime(todaySeconds)}</strong></div>
+          <div className="focus-session-actions">
+            <button className="focus-pause-button" onClick={() => onPauseChange(!paused)} disabled={busy}>{paused ? "继续学习" : "暂停"}</button>
+            <button className="focus-stop-button" onClick={onStop} disabled={busy}>{busy ? "处理中…" : "结束自习"}</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p>选择今天的一项任务，或开始自由自习。</p>
+          <div className="focus-total"><small>今日累计</small><strong>{formatStudyTime(todaySeconds)}</strong></div>
+          <button className="focus-start-button" onClick={onStart}>开始自习</button>
+        </>
+      )}
+    </section>
+  );
+}
+
+function PartnerFocusPanel({ member, active, elapsed, pomodoro, todaySeconds, completed, total, onRefresh }: {
+  member?: Member;
+  active: FocusSession | null;
+  elapsed: number;
+  pomodoro: PomodoroSnapshot | null;
+  todaySeconds: number;
+  completed: number;
+  total: number;
+  onRefresh: () => void | Promise<void>;
+}) {
+  const paused = Boolean(active?.pausedAt);
+  return (
+    <section className={`panel partner-focus-panel ${active ? "active" : ""} ${pomodoro?.phase === "break" ? "break" : ""} ${paused ? "paused" : ""}`}>
+      <div className="partner-focus-heading">
+        <span className="partner-avatar" style={{ background: member?.color ?? "#7c5cfc" }}>{member?.name.slice(-1) ?? "Ta"}</span>
+        <div><small>对方的自习状态</small><h2>{member?.name ?? "对方"}</h2></div>
+        <button onClick={onRefresh} aria-label="刷新对方自习状态">↻</button>
+      </div>
+      {active ? (
+        <div className="partner-focus-live">
+          <span><i />{paused ? "已暂停" : pomodoro ? `第 ${pomodoro.round} 轮 · ${pomodoro.phase === "focus" ? "专注中" : "休息中"}` : "正在自习"}</span>
+          <strong>{active.taskTitle}</strong>
+          <b>{formatClock(pomodoro?.remainingSeconds ?? elapsed)}</b>
+          <p>{paused ? "对方暂时停下了计时，准备好后会继续。" : "此刻，你们正在为各自的目标一起努力。"}</p>
+        </div>
+      ) : (
+        <div className="partner-focus-idle">
+          <strong>当前还没有开始自习</strong>
+        </div>
+      )}
+      <div className="partner-focus-summary">
+        <span><small>今日自习</small><strong>{formatStudyTime(todaySeconds)}</strong></span>
+        <span><small>任务完成</small><strong>{completed}/{total}</strong></span>
+      </div>
+    </section>
+  );
+}
+
+function FocusPicker({ tasks, busy, onClose, onStart }: {
+  tasks: StudyTask[];
+  busy: boolean;
+  onClose: () => void;
+  onStart: (taskId: string | null, pomodoro: PomodoroConfig | null) => Promise<void>;
+}) {
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null | undefined>(undefined);
+  const [timerMode, setTimerMode] = useState<"stopwatch" | "pomodoro">("stopwatch");
+  const [focusMinutes, setFocusMinutes] = useState("25");
+  const [breakMinutes, setBreakMinutes] = useState("5");
+  const focusValue = Number(focusMinutes);
+  const breakValue = Number(breakMinutes);
+  const validPomodoro = Number.isInteger(focusValue) && focusValue >= 1 && focusValue <= 180
+    && Number.isInteger(breakValue) && breakValue >= 1 && breakValue <= 60;
+  const selectedTask = selectedTaskId === null
+    ? null
+    : tasks.find((task) => task.id === selectedTaskId);
+
+  async function begin() {
+    if (selectedTaskId === undefined) return;
+    await onStart(selectedTaskId, timerMode === "pomodoro" ? {
+      focusMinutes: focusValue,
+      breakMinutes: breakValue,
+    } : null);
+  }
+
+  return (
+    <div className="modal-backdrop focus-picker-backdrop">
+      <section className="login-card focus-picker" role="dialog" aria-modal="true" aria-label="选择自习任务">
+        <div className="editor-heading">
+          <div><span>自习模式</span><h2>{selectedTaskId === undefined ? "这次准备学什么？" : "要使用番茄钟吗？"}</h2></div>
+          <button onClick={onClose} disabled={busy} aria-label="关闭">×</button>
+        </div>
+        {selectedTaskId === undefined ? (
+          <>
+            <p className="login-copy">学习时间会记录到所选任务，也可以不关联任务。</p>
+            <div className="focus-task-options">
+              <button onClick={() => setSelectedTaskId(null)} disabled={busy}>
+                <i>∞</i><span><strong>自由自习</strong><small>不关联具体任务</small></span><b>选择 ›</b>
+              </button>
+              {tasks.map((task, index) => (
+                <button key={task.id} onClick={() => setSelectedTaskId(task.id)} disabled={busy}>
+                  <i>{index + 1}</i><span><strong>{task.title}</strong><small>{task.completed ? "已完成，可继续学习" : "今日任务"}</small></span><b>选择 ›</b>
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div className="focus-timer-step">
+            <button className="focus-step-back" onClick={() => setSelectedTaskId(undefined)} disabled={busy}>‹ 重新选择任务</button>
+            <div className="selected-focus-task">
+              <i>{selectedTask ? tasks.findIndex((task) => task.id === selectedTask.id) + 1 : "∞"}</i>
+              <span><small>本次学习</small><strong>{selectedTask?.title ?? "自由自习"}</strong></span>
+            </div>
+            <div className="timer-mode-options" role="group" aria-label="选择计时方式">
+              <button className={timerMode === "stopwatch" ? "active" : ""} onClick={() => setTimerMode("stopwatch")}>
+                <strong>普通自习</strong><small>正向记录学习时间</small>
+              </button>
+              <button className={timerMode === "pomodoro" ? "active" : ""} onClick={() => setTimerMode("pomodoro")}>
+                <strong>番茄钟</strong><small>专注与休息自动循环</small>
+              </button>
+            </div>
+            {timerMode === "pomodoro" && (
+              <div className="pomodoro-settings">
+                <label>
+                  <span>每轮专注</span>
+                  <span><input type="number" inputMode="numeric" min="1" max="180" step="1" value={focusMinutes} onChange={(event) => setFocusMinutes(event.target.value)} /> 分钟</span>
+                </label>
+                <label>
+                  <span>每轮休息</span>
+                  <span><input type="number" inputMode="numeric" min="1" max="60" step="1" value={breakMinutes} onChange={(event) => setBreakMinutes(event.target.value)} /> 分钟</span>
+                </label>
+                <p>{validPomodoro ? `${focusValue} 分钟专注后休息 ${breakValue} 分钟，将自动进入下一轮。` : "专注可设置 1–180 分钟，休息可设置 1–60 分钟。"}</p>
+              </div>
+            )}
+            <button className="primary-button focus-begin-button" onClick={begin} disabled={busy || (timerMode === "pomodoro" && !validPomodoro)}>
+              {busy ? "开始中…" : timerMode === "pomodoro" ? "开始番茄钟" : "开始普通自习"}
+            </button>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function FocusResultModal({ result, canCheckin, busy, onClose, onCheckin }: {
+  result: FocusResult;
+  canCheckin: boolean;
+  busy: boolean;
+  onClose: () => void;
+  onCheckin: () => void;
+}) {
+  return (
+    <div className="modal-backdrop">
+      <section className="login-card focus-result" role="dialog" aria-modal="true" aria-label="自习已结束">
+        <span className="focus-result-mark">✓</span>
+        <small>{result.timerMode === "pomodoro" ? "本次番茄钟专注时间（休息不计入）" : "本次自习已结束"}</small>
+        <h2>{formatStudyTime(result.durationSeconds)}</h2>
+        <p>{result.taskTitle}</p>
+        {canCheckin ? (
+          <div className="editor-actions">
+            <button className="secondary-button" onClick={onClose} disabled={busy}>暂不打卡</button>
+            <button className="primary-button" onClick={onCheckin} disabled={busy}>{busy ? "打卡中…" : "同时完成任务"}</button>
+          </div>
+        ) : (
+          <button className="primary-button focus-result-close" onClick={onClose}>完成</button>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function IdentityModal({ onSuccess }: { onSuccess: (token: string) => Promise<void> }) {
+  const [submitting, setSubmitting] = useState<"user1" | "user2" | null>(null);
+  const [message, setMessage] = useState("");
+
+  async function select(userKey: "user1" | "user2") {
+    setSubmitting(userKey);
+    setMessage("");
+    try {
+      const result = await callStudyApi<{ token: string }>("selectUser", { userKey });
+      await onSuccess(result.token);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "进入失败");
+      setSubmitting(null);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <section className="login-card identity-card" role="dialog" aria-modal="true" aria-label="选择学习用户">
+        <div className="mini-brand"><span className="brand-mark"><i /><i /><i /></span>一起进步</div>
+        <h2>今天是谁来打卡？</h2>
+        <div className="identity-options">
+          <button onClick={() => select("user1")} disabled={Boolean(submitting)}>
+            <span className="identity-option-avatar user-one">一</span>
+            <span><strong>蔡</strong></span>
+            <b>{submitting === "user1" ? "进入中…" : "进入 ›"}</b>
+          </button>
+          <button onClick={() => select("user2")} disabled={Boolean(submitting)}>
+            <span className="identity-option-avatar user-two">二</span>
+            <span><strong>刘</strong></span>
+            <b>{submitting === "user2" ? "进入中…" : "进入 ›"}</b>
+          </button>
+        </div>
+        {message && <p className="form-error">{message}</p>}
+        <p className="privacy-note">选择后仍可随时切换用户。</p>
+      </section>
+    </div>
+  );
+}
+
+type DraftTask = { id: string; title: string; key: string };
+
+function ChangelogModal({ entries, onClose }: { entries: ChangelogEntry[]; onClose: () => void }) {
+  return (
+    <div className="modal-backdrop changelog-backdrop">
+      <section className="login-card changelog-card" role="dialog" aria-modal="true" aria-labelledby="changelog-title">
+        <div className="changelog-heading">
+          <div><span>VERSION {APP_VERSION}</span><h2 id="changelog-title">更新日志</h2></div>
+          <button onClick={onClose} aria-label="关闭更新日志">×</button>
+        </div>
+        <p className="login-copy">本次更新与项目此前的重要版本记录如下。</p>
+        <div className="changelog-list">
+          {entries.map((entry, index) => (
+            <article key={entry.version} className={index === 0 ? "current" : ""}>
+              <header><strong>v{entry.version}</strong><time dateTime={entry.date}>{entry.date}</time>{index === 0 && <b>当前版本</b>}</header>
+              <ul>{entry.items.map((item) => <li key={item}>{item}</li>)}</ul>
+            </article>
+          ))}
+        </div>
+        <button className="primary-button changelog-confirm" onClick={onClose}>知道了</button>
+      </section>
+    </div>
+  );
+}
+
+function TaskEditor({ member, tasks, repeatDaily: initialRepeatDaily, onClose, onSave, onReset }: {
+  member: Member;
+  tasks: StudyTask[];
+  repeatDaily: boolean;
+  onClose: () => void;
+  onSave: (tasks: Array<{ id: string; title: string }>, repeatDaily: boolean) => Promise<void>;
+  onReset: () => Promise<void>;
+}) {
+  const [drafts, setDrafts] = useState<DraftTask[]>(tasks.map((task) => ({ id: task.id, title: task.title, key: task.id })));
+  const [repeatDaily, setRepeatDaily] = useState(initialRepeatDaily);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+
+  function addTask() {
+    if (drafts.length >= 12) return;
+    setDrafts((current) => [...current, { id: "", title: "", key: `draft-${Date.now()}-${current.length}` }]);
+  }
+
+  function moveTask(key: string, direction: -1 | 1) {
+    setDrafts((current) => {
+      const index = current.findIndex((task) => task.key === key);
+      const nextIndex = index + direction;
+      if (index < 0 || nextIndex < 0 || nextIndex >= current.length) return current;
+      const reordered = [...current];
+      [reordered[index], reordered[nextIndex]] = [reordered[nextIndex], reordered[index]];
+      return reordered;
+    });
+  }
+
+  async function save() {
+    const cleaned = drafts.map(({ id, title }) => ({ id, title: title.trim() })).filter((task) => task.title);
+    setSaving(true);
+    setMessage("");
+    try { await onSave(cleaned, repeatDaily); } catch (err) {
+      setMessage(err instanceof Error ? err.message : "保存失败");
+      setSaving(false);
+    }
+  }
+
+  async function reset() {
+    setSaving(true);
+    setMessage("");
+    try { await onReset(); } catch (err) {
+      setMessage(err instanceof Error ? err.message : "恢复失败");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <section className="login-card task-editor" role="dialog" aria-modal="true" aria-label="编辑今日任务">
+        <div className="editor-heading"><div><span>今日计划</span><h2>编辑{member.name}的任务</h2></div><button onClick={onClose} aria-label="关闭">×</button></div>
+        <p className="login-copy">最多添加 12 项。使用箭头调整顺序，完成状态和学习时长会跟随任务移动。</p>
+        <div className="task-editor-list">
+          {drafts.map((task, index) => (
+            <div key={task.key}>
+              <span>{index + 1}</span>
+              <input
+                value={task.title}
+                maxLength={30}
+                placeholder="输入学习任务"
+                onChange={(event) => setDrafts((current) => current.map((item) => item.key === task.key ? { ...item, title: event.target.value } : item))}
+              />
+              <div className="task-order-buttons" aria-label={`调整第 ${index + 1} 项顺序`}>
+                <button onClick={() => moveTask(task.key, -1)} disabled={saving || index === 0} aria-label={`上移第 ${index + 1} 项`}>↑</button>
+                <button onClick={() => moveTask(task.key, 1)} disabled={saving || index === drafts.length - 1} aria-label={`下移第 ${index + 1} 项`}>↓</button>
+              </div>
+              <button onClick={() => setDrafts((current) => current.filter((item) => item.key !== task.key))} aria-label={`删除第 ${index + 1} 项`}>−</button>
+            </div>
+          ))}
+          {!drafts.length && <p>任务列表为空，点击下方按钮添加。</p>}
+        </div>
+        <button className="add-task-button" onClick={addTask} disabled={drafts.length >= 12}>＋ 添加一项任务</button>
+        <button
+          type="button"
+          className={`repeat-task-toggle ${repeatDaily ? "active" : ""}`}
+          role="switch"
+          aria-checked={repeatDaily}
+          onClick={() => setRepeatDaily((current) => !current)}
+          disabled={saving}
+        >
+          <span><strong>每天重复</strong><small>{repeatDaily ? "当前任务将从今天起每天自动沿用" : "关闭时只保存当前学习日"}</small></span>
+          <i aria-hidden="true"><b /></i>
+        </button>
+        {message && <p className="form-error">{message}</p>}
+        <div className="editor-actions">
+          <button className="secondary-button" onClick={reset} disabled={saving}>{repeatDaily ? "停止重复并恢复默认" : member.userKey === "user1" ? "恢复默认任务" : "清空今日任务"}</button>
+          <button className="primary-button" onClick={save} disabled={saving}>{saving ? "保存中…" : repeatDaily ? "保存并每天重复" : "保存今日任务"}</button>
+        </div>
+      </section>
+    </div>
+  );
+}

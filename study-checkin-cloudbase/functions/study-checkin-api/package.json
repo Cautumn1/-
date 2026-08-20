@@ -1,0 +1,9 @@
+{
+  "name": "study-checkin-api",
+  "version": "1.6.0",
+  "private": true,
+  "main": "index.js",
+  "dependencies": {
+    "@cloudbase/node-sdk": "3.18.3"
+  }
+}

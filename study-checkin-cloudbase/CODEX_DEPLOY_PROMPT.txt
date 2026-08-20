@@ -1,0 +1,16 @@
+请使用已经配置好的 CloudBase MCP，把当前目录中的现有“双人学习打卡”项目迁移部署到我已有的腾讯云 CloudBase 环境。
+
+必须遵守：
+1. 这是部署现有项目，不要重新设计页面，不要改四个打卡项目、邀请码/PIN、双人进度和连续打卡逻辑。
+2. 只使用现有环境 a1-d4gbxqxqmc01c0e55；先通过 MCP 登录并确认环境，不要创建新环境。
+3. 不要开通或升级任何付费资源。若某一步可能收费，立即停止并告诉我。
+4. 前端是 Vite React 项目，先 npm install，再 npm run build；静态托管上传 dist 目录。
+5. 创建文档数据库集合 groups、members、sessions、checkins。客户端不可直接读写这些集合，数据只通过云函数访问。
+6. 为 checkins 建立 groupId 升序 + day 降序复合索引；为 groups 的 code、members 的 groupId 建立普通索引（若系统已有则复用）。
+7. 将 functions/study-checkin-api 部署为名称 study-checkin-api 的 Node.js 18 或更高版本普通云函数，并安装其 package.json 依赖。
+8. 确认匿名登录已启用，并只给默认访客调用 study-checkin-api 云函数的权限；不要开放数据库客户端读写权限。
+9. 将 dist 上传到 CloudBase 静态网站托管，设置 index.html 为首页，并为前端路由配置回退到 index.html（如果平台需要）。
+10. 部署后实际测试：首次创建双人空间、另一身份用共享码和另一个 PIN 加入、两边分别打卡并能互相看到进度。测试数据可以在验证后删除。
+11. 最后只向我报告：国内可访问网址、测试结果、是否仍处于免费体验版，以及以后更新网站需要执行的命令/步骤。
+
+如果代码与当前 CloudBase SDK 或平台配置存在小版本差异，请做最小兼容修改并继续；不要重写整个项目。
