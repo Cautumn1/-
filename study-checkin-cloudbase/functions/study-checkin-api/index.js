@@ -1200,10 +1200,11 @@ async function applyTaskTemplate(event) {
     appliedDays.push(day);
   }
   if (appliedDays.length) {
-    await db.collection("members").doc(member.id).update({
-      taskOverrides: overrides,
-      updatedAt: Date.now(),
-    });
+    const update = { updatedAt: Date.now() };
+    for (const day of appliedDays) {
+      update[`taskOverrides.${day}`] = command.remove();
+    }
+    await db.collection("members").doc(member.id).update(update);
     await markFocusSummaryChanged();
   }
   return { appliedDays, skippedDays: Array.from(protectedDays) };
