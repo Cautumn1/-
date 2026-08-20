@@ -1,0 +1,15 @@
+# Local secrets and environment-specific configuration
+**/.env
+**/.env.*
+!**/.env.example
+
+# Installed dependencies and build output
+**/node_modules/
+**/dist/
+
+# Local logs, archives, and OS metadata
+*.log
+*.zip
+.DS_Store
+Thumbs.db
+
