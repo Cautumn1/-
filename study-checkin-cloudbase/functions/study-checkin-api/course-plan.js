@@ -175,12 +175,17 @@ function mergeUniqueTasks(...lists) {
   return result;
 }
 
+function combineDailyTasks(baseTasks, scheduledTasks, makeupTasks) {
+  return mergeUniqueTasks(scheduledTasks, makeupTasks, baseTasks);
+}
+
 function fixedPlanDays(startDay) {
   return Array.from({ length: PLAN_WINDOW_DAYS }, (_, index) => dateOffset(startDay, index));
 }
 
 module.exports = {
   PLAN_WINDOW_DAYS,
+  combineDailyTasks,
   courseTaskId,
   courseTasksForDay,
   dateOffset,

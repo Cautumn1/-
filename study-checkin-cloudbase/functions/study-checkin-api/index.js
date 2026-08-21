@@ -2,12 +2,12 @@ const tcb = require("@cloudbase/node-sdk");
 const crypto = require("node:crypto");
 const {
   PLAN_WINDOW_DAYS,
+  combineDailyTasks,
   courseTasksForDay,
   dateOffset,
   fixedPlanDays,
   lessonAt,
   makeupTasksForDay,
-  mergeUniqueTasks,
   scheduleIsActive,
   tasksForScheduleDay,
 } = require("./course-plan");
@@ -158,7 +158,7 @@ function tasksFor(member, day) {
     member.taskOverrides && Object.prototype.hasOwnProperty.call(member.taskOverrides, day),
   );
   const scheduled = manuallyOverridden ? [] : courseTasksForDay(member, day);
-  return mergeUniqueTasks(
+  return combineDailyTasks(
     baseTasksFor(member, day),
     scheduled,
     makeupTasksForDay(member, day),
@@ -312,7 +312,7 @@ function fullTaskCount(member, day) {
   const manuallyOverridden = Boolean(
     member.taskOverrides && Object.prototype.hasOwnProperty.call(member.taskOverrides, day),
   );
-  return mergeUniqueTasks(
+  return combineDailyTasks(
     baseTasksFor(member, day),
     manuallyOverridden ? [] : courseTasksForDay(member, day),
     makeupTasksForDay(member, day),

@@ -1,12 +1,22 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  combineDailyTasks,
   courseTasksForDay,
   fixedPlanDays,
   makeupTasksForDay,
   mergeUniqueTasks,
   tasksForScheduleDay,
 } = require("../functions/study-checkin-api/course-plan");
+
+test("自动课程和待补课程排在普通任务之前", () => {
+  const combined = combineDailyTasks(
+    [{ id: "ordinary", title: "计算机二级" }],
+    [{ id: "scheduled", title: "英语单词｜第7单元 · 第1课", kind: "course" }],
+    [{ id: "makeup", title: "英语单词｜第6单元 · 第4课", kind: "course" }],
+  );
+  assert.deepEqual(combined.map((task) => task.id), ["scheduled", "makeup", "ordinary"]);
+});
 
 function unitSchedule(overrides = {}) {
   return {

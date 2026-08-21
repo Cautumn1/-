@@ -1518,7 +1518,7 @@ function CoursePlanner({ planDays, taskTemplate, templates, busy, onClose, onEdi
   onSaveDefaultTemplate: (tasks: StudyTask[]) => Promise<void>;
   onApplyDefaultTemplate: (scope: "today" | "window") => Promise<TemplateApplyResult>;
 }) {
-  const [tab, setTab] = useState<"plan" | "templates" | "default">("templates");
+  const [tab, setTab] = useState<"plan" | "templates" | "default">("plan");
   const [editingTemplate, setEditingTemplate] = useState<CourseTemplate | "new" | null>(null);
   const [message, setMessage] = useState("");
 
@@ -1558,9 +1558,9 @@ function CoursePlanner({ planDays, taskTemplate, templates, busy, onClose, onEdi
           <button onClick={onClose} aria-label="关闭">×</button>
         </div>
         <div className="planner-tabs" role="tablist">
-          <button className={tab === "templates" ? "active" : ""} onClick={() => setTab("templates")}>课程模板</button>
-          <button className={tab === "default" ? "active" : ""} onClick={() => setTab("default")}>默认模板</button>
           <button className={tab === "plan" ? "active" : ""} onClick={() => setTab("plan")}>未来7天</button>
+          <button className={tab === "default" ? "active" : ""} onClick={() => setTab("default")}>默认模板</button>
+          <button className={tab === "templates" ? "active" : ""} onClick={() => setTab("templates")}>课程模板</button>
         </div>
 
         {tab === "plan" ? (
