@@ -1085,6 +1085,10 @@ export default function Home() {
           elapsed={myElapsed}
           pomodoro={myPomodoro}
           todaySeconds={myTodaySeconds}
+          partner={partner}
+          partnerActive={partnerActive}
+          partnerElapsed={partnerElapsed}
+          partnerPomodoro={partnerPomodoro}
           companionMessage={companionMessage}
           busy={focusBusy}
           onPauseChange={setFocusPaused}
@@ -1355,11 +1359,15 @@ function FocusPanel({ active, elapsed, pomodoro, todaySeconds, busy, onStart, on
   );
 }
 
-function ImmersiveFocus({ active, elapsed, pomodoro, todaySeconds, companionMessage, busy, onPauseChange, onStop, onClose }: {
+function ImmersiveFocus({ active, elapsed, pomodoro, todaySeconds, partner, partnerActive, partnerElapsed, partnerPomodoro, companionMessage, busy, onPauseChange, onStop, onClose }: {
   active: FocusSession;
   elapsed: number;
   pomodoro: PomodoroSnapshot | null;
   todaySeconds: number;
+  partner?: Member;
+  partnerActive: FocusSession | null;
+  partnerElapsed: number;
+  partnerPomodoro: PomodoroSnapshot | null;
   companionMessage: string;
   busy: boolean;
   onPauseChange: (paused: boolean) => Promise<void>;
@@ -1377,6 +1385,14 @@ function ImmersiveFocus({ active, elapsed, pomodoro, todaySeconds, companionMess
   const stateLabel = paused
     ? resting ? "休息已暂停" : "学习已暂停"
     : resting ? "放松一下" : "保持专注";
+  const partnerPaused = Boolean(partnerActive?.pausedAt);
+  const partnerState = !partnerActive
+    ? "暂未开始"
+    : partnerPaused
+      ? "已暂停"
+      : partnerPomodoro?.phase === "break"
+        ? "番茄休息中"
+        : "正在学习";
 
   return (
     <section
@@ -1393,7 +1409,7 @@ function ImmersiveFocus({ active, elapsed, pomodoro, todaySeconds, companionMess
       <div className="immersive-center">
         <span className="immersive-state"><i />{stateLabel}{pomodoro ? ` · 第 ${pomodoro.round} 轮` : ""}</span>
         <div
-          className={`immersive-ring ${pomodoro ? "pomodoro" : "stopwatch"}`}
+          className={`immersive-timer-frame ${pomodoro ? "pomodoro" : "stopwatch"}`}
           style={{ "--immersive-progress": `${progress}%` } as CSSProperties}
         >
           <div className="immersive-clock-wrap">
@@ -1403,6 +1419,13 @@ function ImmersiveFocus({ active, elapsed, pomodoro, todaySeconds, companionMess
         </div>
         <h2>{active.taskTitle}</h2>
         {pomodoro && <p className="immersive-cycle">专注 {active.pomodoro?.focusMinutes} 分钟 · 休息 {active.pomodoro?.breakMinutes} 分钟</p>}
+        <div className={`immersive-partner ${partnerActive ? "active" : ""} ${partnerPaused ? "paused" : ""}`} aria-label="对方学习计时">
+          <div>
+            <span><i />{partner?.name ?? "对方"} · {partnerState}</span>
+            <small>{partnerActive?.taskTitle ?? "开始自习后显示学习计时"}</small>
+          </div>
+          <strong>{partnerActive ? formatClock(partnerPomodoro?.remainingSeconds ?? partnerElapsed) : "--:--"}</strong>
+        </div>
       </div>
 
       <footer className="immersive-footer">
