@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { callStudyApi } from "./cloudbase";
 import quoteSource from "../../励志语录候选-1000条.md?raw";
 
@@ -344,6 +344,7 @@ export default function Home() {
   const [focusPicker, setFocusPicker] = useState(false);
   const [focusBusy, setFocusBusy] = useState(false);
   const [focusResult, setFocusResult] = useState<FocusResult | null>(null);
+  const [immersiveFocus, setImmersiveFocus] = useState(false);
   const [view, setView] = useState<AppView>("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [availableVersion, setAvailableVersion] = useState<string | null>(null);
@@ -356,6 +357,7 @@ export default function Home() {
   const summaryRevision = useRef("");
   const loadedDay = useRef("");
   const dismissedVersion = useRef("");
+  const immersiveFullscreen = useRef(false);
 
   const checkForUpdate = useCallback(async () => {
     if (document.visibilityState !== "visible") return;
@@ -524,6 +526,40 @@ export default function Home() {
           ? "已暂停，准备好后继续学习"
           : `你正在等${partner?.name ?? "对方"}一起加入`
         : "随时开始，对方会看到你的学习状态";
+
+  useEffect(() => {
+    if (!immersiveFocus) return;
+    if (!myActive) {
+      setImmersiveFocus(false);
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setImmersiveFocus(false);
+    };
+    const onFullscreenChange = () => {
+      if (!document.fullscreenElement && immersiveFullscreen.current) {
+        immersiveFullscreen.current = false;
+        setImmersiveFocus(false);
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+      if (document.fullscreenElement && immersiveFullscreen.current) {
+        immersiveFullscreen.current = false;
+        void document.exitFullscreen().catch(() => { /* The page overlay can close independently. */ });
+      }
+    };
+  }, [immersiveFocus, myActive?.id]);
 
   useEffect(() => {
     if (!token) return;
@@ -711,6 +747,19 @@ export default function Home() {
     }
   }
 
+  function openImmersiveFocus() {
+    if (!myActive) return;
+    setSidebarOpen(false);
+    setImmersiveFocus(true);
+
+    if (typeof document.documentElement.requestFullscreen === "function") {
+      immersiveFullscreen.current = true;
+      void document.documentElement.requestFullscreen({ navigationUI: "hide" }).catch(() => {
+        immersiveFullscreen.current = false;
+      });
+    }
+  }
+
   async function stopFocus() {
     if (!token || focusBusy) return;
     setFocusBusy(true);
@@ -809,6 +858,7 @@ export default function Home() {
     setPlannerOpen(false);
     setFocusPicker(false);
     setFocusResult(null);
+    setImmersiveFocus(false);
     setShowLogin(true);
   }
 
@@ -883,6 +933,7 @@ export default function Home() {
                 onStart={() => setFocusPicker(true)}
                 onPauseChange={setFocusPaused}
                 onStop={stopFocus}
+                onImmersive={openImmersiveFocus}
               />
               <PartnerFocusPanel
                 member={partner}
@@ -1013,7 +1064,7 @@ export default function Home() {
       ) : null}
       </div>
 
-      {data && myActive && (
+      {data && myActive && !immersiveFocus && (
         <div className={`focus-active-bar ${myPaused ? "paused" : ""}`} role="status">
           <span>
             <i />
@@ -1021,10 +1072,25 @@ export default function Home() {
             <strong>{formatClock(myPomodoro?.remainingSeconds ?? myElapsed)}</strong>
           </span>
           <div className="focus-active-actions">
+            <button className="immersive" onClick={openImmersiveFocus} aria-label="进入沉浸全屏">全屏</button>
             <button className="pause" onClick={() => setFocusPaused(!myPaused)} disabled={focusBusy}>{myPaused ? "继续" : "暂停"}</button>
             <button className="stop" onClick={stopFocus} disabled={focusBusy}>{focusBusy ? "处理中…" : "结束"}</button>
           </div>
         </div>
+      )}
+
+      {immersiveFocus && myActive && (
+        <ImmersiveFocus
+          active={myActive}
+          elapsed={myElapsed}
+          pomodoro={myPomodoro}
+          todaySeconds={myTodaySeconds}
+          companionMessage={companionMessage}
+          busy={focusBusy}
+          onPauseChange={setFocusPaused}
+          onStop={stopFocus}
+          onClose={() => setImmersiveFocus(false)}
+        />
       )}
 
       {showLogin && (
@@ -1235,7 +1301,7 @@ function UpdateAvailableModal({ version, onRefresh, onLater }: { version: string
   );
 }
 
-function FocusPanel({ active, elapsed, pomodoro, todaySeconds, busy, onStart, onPauseChange, onStop }: {
+function FocusPanel({ active, elapsed, pomodoro, todaySeconds, busy, onStart, onPauseChange, onStop, onImmersive }: {
   active: FocusSession | null;
   elapsed: number;
   pomodoro: PomodoroSnapshot | null;
@@ -1244,13 +1310,19 @@ function FocusPanel({ active, elapsed, pomodoro, todaySeconds, busy, onStart, on
   onStart: () => void;
   onPauseChange: (paused: boolean) => Promise<void>;
   onStop: () => Promise<void>;
+  onImmersive: () => void;
 }) {
   const paused = Boolean(active?.pausedAt);
   return (
     <section className={`panel focus-panel ${active ? "active" : ""} ${pomodoro?.phase === "break" ? "break" : ""} ${paused ? "paused" : ""}`}>
       <div className="focus-panel-heading">
         <div><span>FOCUS MODE</span><h2>自习模式</h2></div>
-        {active && <i className="focus-live-dot" />}
+        {active && (
+          <div className="focus-heading-actions">
+            <button className="focus-immersive-button" onClick={onImmersive} aria-label="进入沉浸全屏">⛶ 沉浸全屏</button>
+            <i className="focus-live-dot" />
+          </div>
+        )}
       </div>
       {active ? (
         <>
@@ -1279,6 +1351,68 @@ function FocusPanel({ active, elapsed, pomodoro, todaySeconds, busy, onStart, on
           <button className="focus-start-button" onClick={onStart}>开始自习</button>
         </>
       )}
+    </section>
+  );
+}
+
+function ImmersiveFocus({ active, elapsed, pomodoro, todaySeconds, companionMessage, busy, onPauseChange, onStop, onClose }: {
+  active: FocusSession;
+  elapsed: number;
+  pomodoro: PomodoroSnapshot | null;
+  todaySeconds: number;
+  companionMessage: string;
+  busy: boolean;
+  onPauseChange: (paused: boolean) => Promise<void>;
+  onStop: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const paused = Boolean(active.pausedAt);
+  const resting = pomodoro?.phase === "break";
+  const phaseSeconds = pomodoro && active.pomodoro
+    ? (resting ? active.pomodoro.breakMinutes : active.pomodoro.focusMinutes) * 60
+    : 0;
+  const progress = phaseSeconds
+    ? Math.max(0, Math.min(100, (1 - pomodoro!.remainingSeconds / phaseSeconds) * 100))
+    : 100;
+  const stateLabel = paused
+    ? resting ? "休息已暂停" : "学习已暂停"
+    : resting ? "放松一下" : "保持专注";
+
+  return (
+    <section
+      className={`immersive-focus ${resting ? "break" : ""} ${paused ? "paused" : ""}`}
+      role="dialog"
+      aria-modal="true"
+      aria-label="沉浸自习模式"
+    >
+      <header className="immersive-header">
+        <div><span>DEEP FOCUS</span><strong>{pomodoro ? "番茄钟" : "自习计时"}</strong></div>
+        <button className="immersive-close" onClick={onClose} aria-label="退出沉浸全屏">×</button>
+      </header>
+
+      <div className="immersive-center">
+        <span className="immersive-state"><i />{stateLabel}{pomodoro ? ` · 第 ${pomodoro.round} 轮` : ""}</span>
+        <div
+          className={`immersive-ring ${pomodoro ? "pomodoro" : "stopwatch"}`}
+          style={{ "--immersive-progress": `${progress}%` } as CSSProperties}
+        >
+          <div className="immersive-clock-wrap">
+            <strong className="immersive-clock">{formatClock(pomodoro?.remainingSeconds ?? elapsed)}</strong>
+            <span>{pomodoro ? resting ? "距离下一轮专注" : "距离本轮休息" : "本次自习时长"}</span>
+          </div>
+        </div>
+        <h2>{active.taskTitle}</h2>
+        {pomodoro && <p className="immersive-cycle">专注 {active.pomodoro?.focusMinutes} 分钟 · 休息 {active.pomodoro?.breakMinutes} 分钟</p>}
+      </div>
+
+      <footer className="immersive-footer">
+        <div className="immersive-summary"><small>今日已学习</small><strong>{formatStudyTime(todaySeconds)}</strong></div>
+        <div className="immersive-actions">
+          <button className="immersive-pause" onClick={() => onPauseChange(!paused)} disabled={busy}>{paused ? "继续学习" : "暂停"}</button>
+          <button className="immersive-stop" onClick={onStop} disabled={busy}>{busy ? "处理中…" : "结束自习"}</button>
+        </div>
+        <p className="immersive-companion">{companionMessage}</p>
+      </footer>
     </section>
   );
 }

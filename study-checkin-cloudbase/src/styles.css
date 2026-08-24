@@ -119,6 +119,9 @@ button { color: inherit; }
 .focus-panel-heading { position: relative; z-index: 1; display: flex; align-items: flex-start; justify-content: space-between; }
 .focus-panel-heading span { color: var(--blue); font-size: 9px; font-weight: 900; letter-spacing: .16em; }
 .focus-panel-heading h2 { margin: 4px 0 0; font-size: 25px; }
+.focus-heading-actions { display: flex; align-items: center; gap: 8px; }
+.focus-immersive-button { padding: 8px 10px; border: 1px solid #d8dffd; border-radius: 10px; color: #405bc9; background: rgba(255,255,255,.78); font-size: 10px; font-weight: 800; cursor: pointer; }
+.focus-immersive-button:hover { border-color: #a9b7f9; background: #fff; }
 .focus-live-dot { width: 10px; height: 10px; margin: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 6px rgba(24,184,137,.12); animation: focusPulse 1.6s ease-in-out infinite; }
 .focus-panel > p { margin: 15px 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .focus-total { display: flex; align-items: baseline; justify-content: space-between; margin: 18px 0; padding: 12px 14px; border-radius: 12px; background: rgba(238,242,255,.8); }
@@ -136,6 +139,38 @@ button { color: inherit; }
 .focus-clock { margin: 14px 0 18px; color: var(--blue); font-variant-numeric: tabular-nums; font-size: 42px; font-weight: 800; letter-spacing: .02em; }
 .focus-cycle-note { display: block; margin: -8px 0 16px; color: #738098; font-size: 10px; }
 .focus-active-bar { display: none; }
+.immersive-focus { --immersive-accent: #92a5ff; --immersive-accent-soft: rgba(146,165,255,.2); position: fixed; z-index: 90; inset: 0; display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; overflow-y: auto; padding: max(30px,env(safe-area-inset-top)) max(38px,env(safe-area-inset-right)) max(25px,env(safe-area-inset-bottom)) max(38px,env(safe-area-inset-left)); color: #f7f8ff; background: radial-gradient(ellipse at 50% 38%,rgba(78,101,176,.25),transparent 52%),linear-gradient(155deg,#10182b,#11182a 52%,#17142b); }
+.immersive-focus.break { --immersive-accent: #75dec0; --immersive-accent-soft: rgba(117,222,192,.2); background: radial-gradient(ellipse at 50% 38%,rgba(46,141,119,.24),transparent 52%),linear-gradient(155deg,#101b24,#10201f 54%,#102724); }
+.immersive-focus.paused { --immersive-accent: #edc77d; --immersive-accent-soft: rgba(237,199,125,.2); }
+.immersive-header { display: flex; align-items: center; justify-content: space-between; width: min(950px,100%); margin: 0 auto; }
+.immersive-header > div { display: grid; gap: 5px; }
+.immersive-header > div > span { color: var(--immersive-accent); font-size: 10px; font-weight: 900; letter-spacing: .2em; }
+.immersive-header > div > strong { color: rgba(247,248,255,.8); font-size: 15px; }
+.immersive-close { display: grid; place-items: center; width: 43px; height: 43px; border: 1px solid rgba(255,255,255,.13); border-radius: 14px; color: #e5e9ff; background: rgba(255,255,255,.07); font-size: 29px; cursor: pointer; }
+.immersive-close:hover { background: rgba(255,255,255,.13); }
+.immersive-center { display: grid; align-content: center; justify-items: center; flex: 1; min-height: min(470px,65vh); padding: 28px 0 16px; text-align: center; }
+.immersive-state { display: flex; align-items: center; gap: 9px; margin-bottom: 19px; color: var(--immersive-accent); font-size: 13px; font-weight: 750; }
+.immersive-state i { width: 8px; height: 8px; border-radius: 50%; background: var(--immersive-accent); box-shadow: 0 0 0 5px var(--immersive-accent-soft); animation: focusPulse 1.6s ease-in-out infinite; }
+.immersive-focus.paused .immersive-state i { animation: none; }
+.immersive-ring { position: relative; display: grid; place-items: center; width: min(400px,62vh,76vw); aspect-ratio: 1; border-radius: 50%; background: conic-gradient(var(--immersive-accent) var(--immersive-progress),rgba(255,255,255,.11) 0); }
+.immersive-ring::before { position: absolute; inset: 4px; border-radius: inherit; background: #131a2c; content: ""; }
+.immersive-focus.break .immersive-ring::before { background: #12221f; }
+.immersive-ring.stopwatch { background: linear-gradient(145deg,rgba(146,165,255,.8),rgba(124,92,252,.35),rgba(146,165,255,.16)); }
+.immersive-clock-wrap { position: relative; z-index: 1; display: grid; justify-items: center; gap: 10px; }
+.immersive-clock { color: #fff; font-size: clamp(63px,11vw,108px); font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.075em; line-height: 1; }
+.immersive-clock-wrap > span { color: rgba(231,235,255,.62); font-size: 12px; }
+.immersive-center h2 { width: min(560px,92vw); margin: 23px 0 0; overflow: hidden; color: #f6f7ff; font-size: clamp(18px,3.1vw,26px); text-overflow: ellipsis; white-space: nowrap; }
+.immersive-cycle { margin: 8px 0 0; color: rgba(230,235,255,.58); font-size: 12px; }
+.immersive-footer { display: grid; justify-items: center; gap: 15px; width: min(550px,100%); margin: 0 auto; padding-bottom: 7px; }
+.immersive-summary { display: flex; align-items: baseline; gap: 10px; }
+.immersive-summary small { color: rgba(229,234,255,.62); font-size: 12px; }
+.immersive-summary strong { color: var(--immersive-accent); font-size: 17px; }
+.immersive-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: min(400px,100%); }
+.immersive-actions button { min-height: 48px; padding: 11px 18px; border: 1px solid rgba(255,255,255,.15); border-radius: 14px; font-size: 13px; font-weight: 800; cursor: pointer; }
+.immersive-actions button:disabled { opacity: .55; cursor: wait; }
+.immersive-pause { color: #10192d; background: var(--immersive-accent); }
+.immersive-stop { color: rgba(247,248,255,.86); background: rgba(255,255,255,.08); }
+.immersive-companion { margin: 0; color: rgba(223,228,249,.52); font-size: 11px; text-align: center; }
 .partner-focus-panel { display: flex; flex-direction: column; padding: 28px; border-color: #ded6ff; background: linear-gradient(145deg,#fbf9ff,#fff 72%); box-shadow: 0 18px 45px rgba(88,65,145,.09); }
 .partner-focus-panel.active { border-color: #a9e3d2; background: linear-gradient(145deg,#f0fbf7,#fff 72%); }
 .partner-focus-panel.break { border-color: #c8dfd9; background: linear-gradient(145deg,#f4faf8,#fff 72%); }
@@ -450,6 +485,8 @@ button { color: inherit; }
   .focus-stage .panel { min-height: 228px; }
   .focus-panel { display: flex; padding: 22px; }
   .focus-panel-heading h2 { font-size: 22px; }
+  .focus-heading-actions { gap: 4px; }
+  .focus-immersive-button { padding: 7px 8px; font-size: 9px; }
   .focus-clock { margin: 12px 0 15px; font-size: 36px; }
   .partner-focus-panel { padding: 21px 22px; }
   .partner-focus-live { margin: 17px 0 14px; }
@@ -464,9 +501,24 @@ button { color: inherit; }
   .focus-active-bar strong { color: var(--blue); font-variant-numeric: tabular-nums; font-size: 17px; }
   .focus-active-actions { display: flex; gap: 6px; }
   .focus-active-bar button { padding: 10px 11px; border: 0; border-radius: 11px; font-size: 11px; font-weight: 800; }
+  .focus-active-bar button.immersive { color: #6652ce; background: #f1eeff; }
   .focus-active-bar button.pause { color: #3855ca; background: #edf1ff; }
   .focus-active-bar button.stop { color: #b84939; background: #fff0ed; }
   .focus-active-bar button:disabled { opacity: .6; }
+  .immersive-focus { padding: max(22px,env(safe-area-inset-top)) max(18px,env(safe-area-inset-right)) max(19px,env(safe-area-inset-bottom)) max(18px,env(safe-area-inset-left)); }
+  .immersive-header > div > strong { font-size: 13px; }
+  .immersive-close { width: 40px; height: 40px; }
+  .immersive-center { min-height: min(430px,61vh); padding: 19px 0 12px; }
+  .immersive-state { margin-bottom: 14px; font-size: 11px; }
+  .immersive-ring { width: min(340px,55vh,79vw); }
+  .immersive-clock { font-size: clamp(59px,17vw,92px); }
+  .immersive-clock-wrap > span { font-size: 10px; }
+  .immersive-center h2 { margin-top: 18px; font-size: 19px; }
+  .immersive-cycle { font-size: 10px; }
+  .immersive-footer { gap: 12px; }
+  .immersive-actions { gap: 9px; }
+  .immersive-actions button { min-height: 46px; }
+  .immersive-companion { font-size: 10px; }
   .task-grid { grid-template-columns: 1fr; gap: 9px; }
   .task-card { min-height: 84px; padding: 12px 13px; border-radius: 15px; }
   .task-icon { flex-basis: 42px; height: 42px; border-radius: 13px; font-size: 16px; }
