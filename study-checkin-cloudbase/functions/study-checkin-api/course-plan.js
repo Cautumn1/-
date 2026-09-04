@@ -27,6 +27,14 @@ function scheduleIsActive(schedule, day) {
   );
 }
 
+function courseIsActive(member, courseId, day) {
+  if (!courseId || !day) return false;
+  const schedules = Array.isArray(member?.courseSchedules) ? member.courseSchedules : [];
+  return schedules.some((schedule) => (
+    schedule?.courseId === courseId && scheduleIsActive(schedule, day)
+  ));
+}
+
 function slotsBeforeDay(schedule, day) {
   if (!scheduleIsActive(schedule, day) && day <= schedule.startDay) return 0;
   const endExclusive = schedule.endDay && schedule.endDay < day
@@ -186,6 +194,7 @@ function fixedPlanDays(startDay) {
 module.exports = {
   PLAN_WINDOW_DAYS,
   combineDailyTasks,
+  courseIsActive,
   courseTaskId,
   courseTasksForDay,
   dateOffset,

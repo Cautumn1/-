@@ -1968,7 +1968,7 @@ function CourseTemplateEditor({ template, planDays, busy, onBack, onClose, onSav
   }
 
   async function remove() {
-    if (!template || !window.confirm(`从 ${formatPlanDate(effectiveDay)} 起停用“${template.name}”吗？\n已完成和此前日期不会改变。`)) return;
+    if (!template || !window.confirm(`从 ${formatPlanDate(effectiveDay)} 起停用“${template.name}”吗？\n未完成的待补课程会一并移除；已完成记录和历史统计会保留。`)) return;
     setSubmitting(true);
     setMessage("");
     try { await onDelete(template.courseId, effectiveDay); }

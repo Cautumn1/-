@@ -3,6 +3,7 @@ const crypto = require("node:crypto");
 const {
   PLAN_WINDOW_DAYS,
   combineDailyTasks,
+  courseIsActive,
   courseTasksForDay,
   dateOffset,
   fixedPlanDays,
@@ -638,7 +639,12 @@ async function getData(event) {
     const completed = new Set(completedByDay[`${current.member.id}:${day}`] || []);
     for (const task of tasksFor(current.member, day)) {
       const key = `${day}|${task.id}`;
-      if (task.kind === "course" && !completed.has(task.id) && !handled.has(key)) {
+      if (
+        task.kind === "course"
+        && courseIsActive(current.member, task.courseId, event.day)
+        && !completed.has(task.id)
+        && !handled.has(key)
+      ) {
         overdueTasks.push({ ...task, sourceDay: day });
       }
     }

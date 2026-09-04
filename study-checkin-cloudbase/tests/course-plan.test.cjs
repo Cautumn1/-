@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   combineDailyTasks,
+  courseIsActive,
   courseTasksForDay,
   fixedPlanDays,
   makeupTasksForDay,
@@ -16,6 +17,14 @@ test("自动课程和待补课程排在普通任务之前", () => {
     [{ id: "makeup", title: "英语单词｜第6单元 · 第4课", kind: "course" }],
   );
   assert.deepEqual(combined.map((task) => task.id), ["scheduled", "makeup", "ordinary"]);
+});
+
+test("课程停用后不再保留旧课程的待补资格", () => {
+  const member = {
+    courseSchedules: [unitSchedule({ endDay: "2026-09-03" })],
+  };
+  assert.equal(courseIsActive(member, "course-english", "2026-09-03"), true);
+  assert.equal(courseIsActive(member, "course-english", "2026-09-04"), false);
 });
 
 function unitSchedule(overrides = {}) {
