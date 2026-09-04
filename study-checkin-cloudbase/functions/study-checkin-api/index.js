@@ -6,6 +6,7 @@ const {
   courseIsActive,
   courseTasksForDay,
   dateOffset,
+  filterActiveCourseTasks,
   fixedPlanDays,
   lessonAt,
   makeupTasksForDay,
@@ -160,9 +161,9 @@ function tasksFor(member, day) {
   );
   const scheduled = manuallyOverridden ? [] : courseTasksForDay(member, day);
   return combineDailyTasks(
-    baseTasksFor(member, day),
+    filterActiveCourseTasks(member, day, baseTasksFor(member, day)),
     scheduled,
-    makeupTasksForDay(member, day),
+    filterActiveCourseTasks(member, day, makeupTasksForDay(member, day)),
   ).slice(0, MAX_TASKS_PER_DAY);
 }
 
@@ -314,9 +315,9 @@ function fullTaskCount(member, day) {
     member.taskOverrides && Object.prototype.hasOwnProperty.call(member.taskOverrides, day),
   );
   return combineDailyTasks(
-    baseTasksFor(member, day),
+    filterActiveCourseTasks(member, day, baseTasksFor(member, day)),
     manuallyOverridden ? [] : courseTasksForDay(member, day),
-    makeupTasksForDay(member, day),
+    filterActiveCourseTasks(member, day, makeupTasksForDay(member, day)),
   ).length;
 }
 
@@ -1095,10 +1096,10 @@ async function saveTasks(event) {
   const member = await readCurrentMember(event.token);
   const existingTasks = tasksFor(member, event.day);
   const tasks = cleanTaskInput(event.tasks, existingTasks);
-  const overrides = { ...(member.taskOverrides || {}) };
-  overrides[event.day] = tasks;
-  const days = Object.keys(overrides).sort().reverse();
-  for (const oldDay of days.slice(60)) delete overrides[oldDay];
+  const days = Array.from(new Set([
+    ...Object.keys(member.taskOverrides || {}),
+    event.day,
+  ])).sort().reverse();
 
   const nextIds = new Set(tasks.map((task) => task.id));
   const removedIds = new Set(existingTasks.filter((task) => !nextIds.has(task.id)).map((task) => task.id));
@@ -1120,10 +1121,14 @@ async function saveTasks(event) {
     }
   }
 
-  await db.collection("members").doc(member.id).update({
-    taskOverrides: overrides,
+  const update = {
+    [`taskOverrides.${event.day}`]: command.set(tasks),
     updatedAt: Date.now(),
-  });
+  };
+  for (const oldDay of days.slice(60)) {
+    if (oldDay !== event.day) update[`taskOverrides.${oldDay}`] = command.remove();
+  }
+  await db.collection("members").doc(member.id).update(update);
   await markFocusSummaryChanged();
   return { tasks };
 }

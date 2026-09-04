@@ -4,6 +4,7 @@ const {
   combineDailyTasks,
   courseIsActive,
   courseTasksForDay,
+  filterActiveCourseTasks,
   fixedPlanDays,
   makeupTasksForDay,
   mergeUniqueTasks,
@@ -25,6 +26,22 @@ test("课程停用后不再保留旧课程的待补资格", () => {
   };
   assert.equal(courseIsActive(member, "course-english", "2026-09-03"), true);
   assert.equal(courseIsActive(member, "course-english", "2026-09-04"), false);
+});
+
+test("课程停用后会清除单日快照和移入任务中的旧课程", () => {
+  const member = {
+    courseSchedules: [unitSchedule({ endDay: "2026-09-03" })],
+  };
+  const oldCourseTask = tasksForScheduleDay(member.courseSchedules[0], "2026-08-24")[0];
+  const snapshot = [oldCourseTask, { id: "ordinary", title: "计算机二级" }];
+  assert.deepEqual(
+    filterActiveCourseTasks(member, "2026-09-04", snapshot).map((task) => task.id),
+    ["ordinary"],
+  );
+  assert.deepEqual(
+    filterActiveCourseTasks(member, "2026-09-03", snapshot).map((task) => task.id),
+    [oldCourseTask.id, "ordinary"],
+  );
 });
 
 function unitSchedule(overrides = {}) {

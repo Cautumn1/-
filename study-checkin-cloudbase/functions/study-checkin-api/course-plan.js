@@ -35,6 +35,13 @@ function courseIsActive(member, courseId, day) {
   ));
 }
 
+function filterActiveCourseTasks(member, day, tasks) {
+  if (!Array.isArray(tasks)) return [];
+  return tasks.filter((task) => (
+    task?.kind !== "course" || courseIsActive(member, task.courseId, day)
+  ));
+}
+
 function slotsBeforeDay(schedule, day) {
   if (!scheduleIsActive(schedule, day) && day <= schedule.startDay) return 0;
   const endExclusive = schedule.endDay && schedule.endDay < day
@@ -198,6 +205,7 @@ module.exports = {
   courseTaskId,
   courseTasksForDay,
   dateOffset,
+  filterActiveCourseTasks,
   fixedPlanDays,
   lessonAt,
   makeupTasksForDay,
