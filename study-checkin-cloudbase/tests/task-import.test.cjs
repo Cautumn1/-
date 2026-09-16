@@ -82,10 +82,10 @@ test("追加时保留原任务ID并跳过同日同名任务", () => {
 });
 
 test("某天超过上限时不改动原任务数组", () => {
-  const existing = Array.from({ length: 12 }, (_, index) => ({ id: `task-${index}`, title: `任务${index}` }));
+  const existing = Array.from({ length: 20 }, (_, index) => ({ id: `task-${index}`, title: `任务${index}` }));
   assert.throws(
-    () => mergeImportedTasks(existing, [{ title: "第13项" }], () => "custom-new"),
-    /超过 12 项任务/,
+    () => mergeImportedTasks(existing, [{ title: "第21项" }], () => "custom-new"),
+    /超过 20 项任务/,
   );
-  assert.equal(existing.length, 12);
+  assert.equal(existing.length, 20);
 });

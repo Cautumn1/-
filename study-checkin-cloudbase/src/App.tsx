@@ -115,6 +115,7 @@ const STATUS_REFRESH_THROTTLE = 60 * 1000;
 const STUDY_DAY_START_HOUR = 5;
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
+const MAX_TASKS_PER_DAY = 20;
 const LAST_QUOTE_KEY = "study-last-motivational-quote";
 const LAST_SEEN_VERSION_KEY = "study-last-seen-version";
 const APP_VERSION = "1.7.0";
@@ -1903,7 +1904,7 @@ function DefaultTaskTemplatePanel({ tasks, busy, onSave, onApply }: {
   }, [tasks]);
 
   function addTask() {
-    if (drafts.length >= 12) return;
+    if (drafts.length >= MAX_TASKS_PER_DAY) return;
     setDrafts((current) => [...current, {
       id: "",
       title: "",
@@ -1962,7 +1963,7 @@ function DefaultTaskTemplatePanel({ tasks, busy, onSave, onApply }: {
     <section className="default-template-panel" aria-label="默认任务模板">
       <div className="template-toolbar default-template-toolbar">
         <p>这里填写每天都可能使用的普通任务；课程任务仍由课程模板自动叠加。</p>
-        <button onClick={addTask} disabled={busy || submitting || drafts.length >= 12}>＋ 添加任务</button>
+        <button onClick={addTask} disabled={busy || submitting || drafts.length >= MAX_TASKS_PER_DAY}>＋ 添加任务</button>
       </div>
       <div className="task-editor-list default-template-list">
         {drafts.map((task, index) => (
@@ -2144,7 +2145,7 @@ function TaskEditor({ day, tasks, onClose, onSave, onReset }: {
   const [message, setMessage] = useState("");
 
   function addTask() {
-    if (drafts.length >= 12) return;
+    if (drafts.length >= MAX_TASKS_PER_DAY) return;
     setDrafts((current) => [...current, { id: "", title: "", completed: false, key: `draft-${Date.now()}-${current.length}` }]);
   }
 
@@ -2184,7 +2185,7 @@ function TaskEditor({ day, tasks, onClose, onSave, onReset }: {
     <div className="modal-backdrop">
       <section className="login-card task-editor" role="dialog" aria-modal="true" aria-label={`编辑${day}任务`}>
         <div className="editor-heading"><div><span>{day === localDay() ? "今日计划" : "单日计划"}</span><h2>编辑{formatPlanDate(day)}的任务</h2></div><button onClick={onClose} aria-label="关闭">×</button></div>
-        <p className="login-copy">这里只修改这一天，不会改变默认模板。最多添加 12 项；修改自动课程标题会按新任务处理。</p>
+        <p className="login-copy">这里只修改这一天，不会改变默认模板。最多添加 {MAX_TASKS_PER_DAY} 项；修改自动课程标题会按新任务处理。</p>
         <div className="task-editor-list">
           {drafts.map((task, index) => (
             <div key={task.key}>
@@ -2204,7 +2205,7 @@ function TaskEditor({ day, tasks, onClose, onSave, onReset }: {
           ))}
           {!drafts.length && <p>任务列表为空，点击下方按钮添加。</p>}
         </div>
-        <button className="add-task-button" onClick={addTask} disabled={drafts.length >= 12}>＋ 添加一项任务</button>
+        <button className="add-task-button" onClick={addTask} disabled={drafts.length >= MAX_TASKS_PER_DAY}>＋ 添加一项任务</button>
         {message && <p className="form-error">{message}</p>}
         <div className="editor-actions">
           <button className="secondary-button" onClick={reset} disabled={saving}>套用默认模板</button>

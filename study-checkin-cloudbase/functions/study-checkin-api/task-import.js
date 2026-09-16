@@ -36,7 +36,7 @@ function normalizedTaskTitle(title) {
   return String(title || "").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-function mergeImportedTasks(currentTasks, importedItems, createId, maxTasks = 12) {
+function mergeImportedTasks(currentTasks, importedItems, createId, maxTasks = 20) {
   const nextTasks = Array.isArray(currentTasks) ? [...currentTasks] : [];
   const existingTitles = new Set(nextTasks.map((task) => normalizedTaskTitle(task?.title)));
   let imported = 0;
