@@ -101,6 +101,7 @@ type HistoryData = {
 };
 type AppView = "dashboard" | "history";
 type TemplateApplyResult = { appliedDays: string[]; skippedDays: string[] };
+type TaskImportResult = { imported: number; skippedDuplicates: number; affectedDays: string[] };
 
 type ChangelogEntry = {
   version: string;
@@ -695,6 +696,23 @@ export default function Home() {
     }
   }
 
+  async function importPlanTasks(text: string) {
+    if (!token) return { imported: 0, skippedDuplicates: 0, affectedDays: [] };
+    setPlanBusy("import-plan-tasks");
+    setError("");
+    try {
+      const result = await callStudyApi<TaskImportResult>("importPlanTasks", {
+        token,
+        day: localDay(),
+        text,
+      });
+      await load(token);
+      return result;
+    } finally {
+      setPlanBusy("");
+    }
+  }
+
   async function deferCourseTask(task: OverdueTask, mode: "move" | "shift") {
     if (!token || planBusy) return;
     if (mode === "shift" && !window.confirm(`从“${task.title}”开始整体顺延吗？\n\n已完成和手动修改的任务不会改变，7天计划窗口也不会增加日期。`)) return;
@@ -1133,6 +1151,7 @@ export default function Home() {
           onSaveTemplate={saveCourseTemplate}
           onDeleteTemplate={deleteCourseTemplate}
           onGenerateWindow={generateCourseWindow}
+          onImportTasks={importPlanTasks}
           onSaveDefaultTemplate={saveDefaultTaskTemplate}
           onApplyDefaultTemplate={(scope) => applyDefaultTaskTemplate(scope)}
         />
@@ -1662,7 +1681,7 @@ function weeklySummary(counts: number[]) {
   return active.length ? active.join(" · ") : "尚未安排课程";
 }
 
-function CoursePlanner({ planDays, taskTemplate, templates, busy, onClose, onEditDay, onSaveTemplate, onDeleteTemplate, onGenerateWindow, onSaveDefaultTemplate, onApplyDefaultTemplate }: {
+function CoursePlanner({ planDays, taskTemplate, templates, busy, onClose, onEditDay, onSaveTemplate, onDeleteTemplate, onGenerateWindow, onImportTasks, onSaveDefaultTemplate, onApplyDefaultTemplate }: {
   planDays: PlanDay[];
   taskTemplate: StudyTask[];
   templates: CourseTemplate[];
@@ -1672,11 +1691,13 @@ function CoursePlanner({ planDays, taskTemplate, templates, busy, onClose, onEdi
   onSaveTemplate: (input: CourseTemplateInput) => Promise<void>;
   onDeleteTemplate: (courseId: string, effectiveDay: string) => Promise<void>;
   onGenerateWindow: (scheduleId: string) => Promise<void>;
+  onImportTasks: (text: string) => Promise<TaskImportResult>;
   onSaveDefaultTemplate: (tasks: StudyTask[]) => Promise<void>;
   onApplyDefaultTemplate: (scope: "today" | "window") => Promise<TemplateApplyResult>;
 }) {
   const [tab, setTab] = useState<"plan" | "templates" | "default">("plan");
   const [editingTemplate, setEditingTemplate] = useState<CourseTemplate | "new" | null>(null);
+  const [importingText, setImportingText] = useState(false);
   const [message, setMessage] = useState("");
 
   async function generate(scheduleId: string) {
@@ -1707,6 +1728,27 @@ function CoursePlanner({ planDays, taskTemplate, templates, busy, onClose, onEdi
     );
   }
 
+  if (importingText) {
+    return (
+      <TaskTextImporter
+        busy={Boolean(busy)}
+        onBack={() => setImportingText(false)}
+        onClose={onClose}
+        onImport={async (text) => {
+          const result = await onImportTasks(text);
+          const duplicateNote = result.skippedDuplicates
+            ? `，另有 ${result.skippedDuplicates} 项重复任务已跳过`
+            : "";
+          setMessage(result.imported
+            ? `已导入 ${result.imported} 项任务${duplicateNote}。`
+            : `没有新增任务${duplicateNote || "，输入内容与现有任务重复"}。`);
+          setImportingText(false);
+          setTab("plan");
+        }}
+      />
+    );
+  }
+
   return (
     <div className="modal-backdrop planner-backdrop">
       <section className="login-card course-planner" role="dialog" aria-modal="true" aria-label="7天课程计划">
@@ -1722,7 +1764,11 @@ function CoursePlanner({ planDays, taskTemplate, templates, busy, onClose, onEdi
 
         {tab === "plan" ? (
           <>
-            <p className="plan-window-note"><b>固定7天窗口</b>　始终显示今天到第6天；顺延不会增加第8个日期。</p>
+            <div className="plan-window-toolbar">
+              <p className="plan-window-note"><b>固定7天窗口</b>　始终显示今天到第6天；顺延不会增加第8个日期。</p>
+              <button onClick={() => { setMessage(""); setImportingText(true); }} disabled={Boolean(busy)}>文字导入</button>
+            </div>
+            {message && <p className="template-result-message plan-result-message">{message}</p>}
             <div className="seven-day-list">
               {planDays.map((entry, index) => (
                 <article key={entry.day} className={index === 0 ? "today" : ""}>
@@ -1776,6 +1822,67 @@ function CoursePlanner({ planDays, taskTemplate, templates, busy, onClose, onEdi
             {message && <p className="form-error">{message}</p>}
           </>
         )}
+      </section>
+    </div>
+  );
+}
+
+function TaskTextImporter({ busy, onBack, onClose, onImport }: {
+  busy: boolean;
+  onBack: () => void;
+  onClose: () => void;
+  onImport: (text: string) => Promise<void>;
+}) {
+  const [text, setText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [message, setMessage] = useState("");
+
+  async function submit() {
+    if (!text.trim()) {
+      setMessage("请先输入要导入的任务");
+      return;
+    }
+    setSubmitting(true);
+    setMessage("");
+    try {
+      await onImport(text);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "导入失败");
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop planner-backdrop">
+      <section className="login-card course-template-editor task-text-importer" role="dialog" aria-modal="true" aria-label="文字导入任务">
+        <div className="editor-heading">
+          <div><span>TASK IMPORT</span><h2>文字导入任务</h2></div>
+          <button onClick={onClose} aria-label="关闭">×</button>
+        </div>
+        <button className="planner-back-button" onClick={onBack}>‹ 返回未来7天</button>
+        <p className="task-import-copy">每行一项任务，按日期或星期填写。任务会追加到当前7天，已有同名任务自动跳过。</p>
+        <div className="task-import-examples" aria-label="导入格式示例">
+          <code>9/16 背单词</code>
+          <code>9/16 刷选择题</code>
+          <code>星期一 复习错题</code>
+        </div>
+        <label className="task-import-field">
+          <span>任务文本</span>
+          <textarea
+            value={text}
+            rows={10}
+            maxLength={5000}
+            autoFocus
+            placeholder={"9/16 某某任务\n9/16 某某某任务\n9/17 xx任务\n星期一 复习任务"}
+            onChange={(event) => setText(event.target.value)}
+          />
+          <small>支持“月/日”“完整年月日”“星期一”或“周一”；日期必须在当前7天内。</small>
+        </label>
+        {message && <p className="form-error">{message}</p>}
+        <div className="editor-actions">
+          <button className="secondary-button" onClick={onBack} disabled={busy || submitting}>取消</button>
+          <button className="primary-button" onClick={submit} disabled={busy || submitting}>{submitting ? "导入中…" : "导入任务"}</button>
+        </div>
       </section>
     </div>
   );

@@ -13,6 +13,7 @@ const {
   scheduleIsActive,
   tasksForScheduleDay,
 } = require("./course-plan");
+const { mergeImportedTasks, parseTaskImportText } = require("./task-import");
 
 const app = tcb.init({ env: tcb.SYMBOL_DEFAULT_ENV });
 const db = app.database();
@@ -1133,6 +1134,60 @@ async function saveTasks(event) {
   return { tasks };
 }
 
+async function importPlanTasks(event) {
+  if (!validDay(event.day)) throw new PublicError("日期格式错误");
+  const planDays = fixedPlanDays(event.day);
+  let importedItems;
+  try {
+    importedItems = parseTaskImportText(event.text, planDays);
+  } catch (error) {
+    throw new PublicError(error instanceof Error ? error.message : "导入内容格式不正确");
+  }
+
+  const member = await readCurrentMember(event.token);
+  const itemsByDay = new Map();
+  for (const item of importedItems) {
+    if (!itemsByDay.has(item.day)) itemsByDay.set(item.day, []);
+    itemsByDay.get(item.day).push(item);
+  }
+
+  let imported = 0;
+  let skippedDuplicates = 0;
+  const nextTasksByDay = new Map();
+  for (const day of planDays) {
+    const dayItems = itemsByDay.get(day) || [];
+    if (!dayItems.length) continue;
+    let merged;
+    try {
+      merged = mergeImportedTasks(
+        tasksFor(member, day),
+        dayItems,
+        () => `custom-${crypto.randomBytes(6).toString("hex")}`,
+        MAX_TASKS_PER_DAY,
+      );
+    } catch (error) {
+      throw new PublicError(`${day} ${error instanceof Error ? error.message : "任务数量过多"}，请减少该日期的任务`);
+    }
+    imported += merged.imported;
+    skippedDuplicates += merged.skippedDuplicates;
+    if (merged.imported) nextTasksByDay.set(day, cleanStoredTasks(merged.tasks));
+  }
+
+  if (imported) {
+    const update = { updatedAt: Date.now() };
+    for (const [day, tasks] of nextTasksByDay) {
+      update[`taskOverrides.${day}`] = command.set(tasks);
+    }
+    await db.collection("members").doc(member.id).update(update);
+    await markFocusSummaryChanged();
+  }
+  return {
+    imported,
+    skippedDuplicates,
+    affectedDays: Array.from(nextTasksByDay.keys()),
+  };
+}
+
 async function saveTaskTemplate(event) {
   if (!validDay(event.day)) throw new PublicError("日期格式错误");
   const member = await readCurrentMember(event.token);
@@ -1268,6 +1323,8 @@ exports.main = async (event) => {
         return success(await deferCourseTask(event));
       case "saveTasks":
         return success(await saveTasks(event));
+      case "importPlanTasks":
+        return success(await importPlanTasks(event));
       case "saveTaskTemplate":
         return success(await saveTaskTemplate(event));
       case "applyTaskTemplate":
