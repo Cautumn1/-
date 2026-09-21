@@ -28,7 +28,7 @@ function paddedDay(year, month, day) {
 function taskTitle(value, lineNumber) {
   const title = typeof value === "string" ? value.trim() : "";
   if (!title) throw new Error(`第${lineNumber}行缺少任务内容`);
-  if (title.length > 30) throw new Error(`第${lineNumber}行任务超过30个字`);
+  if (title.length > 50) throw new Error(`第${lineNumber}行任务超过50个字`);
   return title;
 }
 

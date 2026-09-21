@@ -1877,7 +1877,7 @@ function TaskTextImporter({ busy, onBack, onClose, onImport }: {
             placeholder={"9/16 某某任务\n9/16 某某某任务\n9/17 xx任务\n星期一 复习任务"}
             onChange={(event) => setText(event.target.value)}
           />
-          <small>支持“月/日”“完整年月日”“星期一”或“周一”；日期必须在当前7天内。</small>
+          <small>支持“月/日”“完整年月日”“星期一”或“周一”；日期必须在当前7天内，每项任务内容最多50个字（不含开头日期或星期）。</small>
         </label>
         {message && <p className="form-error">{message}</p>}
         <div className="editor-actions">
@@ -1971,7 +1971,7 @@ function DefaultTaskTemplatePanel({ tasks, busy, onSave, onApply }: {
             <span>{index + 1}</span>
             <input
               value={task.title}
-              maxLength={30}
+              maxLength={50}
               placeholder="例如：英语单词复习"
               disabled={busy || submitting}
               onChange={(event) => setDrafts((current) => current.map((item) => item.key === task.key ? { ...item, title: event.target.value } : item))}
@@ -2192,7 +2192,7 @@ function TaskEditor({ day, tasks, onClose, onSave, onReset }: {
               <span>{index + 1}</span>
               <input
                 value={task.title}
-                maxLength={task.kind === "course" ? 60 : 30}
+                maxLength={task.kind === "course" ? 60 : 50}
                 placeholder="输入学习任务"
                 onChange={(event) => setDrafts((current) => current.map((item) => item.key === task.key ? { ...item, title: event.target.value } : item))}
               />

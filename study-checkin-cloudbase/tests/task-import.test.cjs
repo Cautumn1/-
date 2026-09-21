@@ -81,6 +81,24 @@ test("追加时保留原任务ID并跳过同日同名任务", () => {
   assert.equal(result.skippedDuplicates, 2);
 });
 
+test("任务内容允许31至50字，日期和星期不计入字数", () => {
+  for (const prefix of ["9/16", "2026/9/16", "星期一"]) {
+    for (const length of [31, 50]) {
+      const title = "学".repeat(length);
+      const items = parseTaskImportText(`${prefix} ${title}`, PLAN_DAYS);
+      const result = mergeImportedTasks([], items, () => "custom-long");
+      assert.equal(result.tasks[0].title, title);
+    }
+  }
+});
+
+test("任务内容超过50字时指出行号和新上限", () => {
+  assert.throws(
+    () => parseTaskImportText(`9/16 正常任务\n星期一 ${"学".repeat(51)}`, PLAN_DAYS),
+    /第2行任务超过50个字/,
+  );
+});
+
 test("某天超过上限时不改动原任务数组", () => {
   const existing = Array.from({ length: 20 }, (_, index) => ({ id: `task-${index}`, title: `任务${index}` }));
   assert.throws(

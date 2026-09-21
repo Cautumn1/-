@@ -82,7 +82,7 @@ function cleanStoredTasks(tasks) {
   if (!Array.isArray(tasks)) return [];
   return tasks.slice(0, MAX_TASKS_PER_DAY).flatMap((task) => {
     const id = typeof task?.id === "string" ? task.id.trim() : "";
-    const titleLimit = task?.kind === "course" ? 60 : 30;
+    const titleLimit = task?.kind === "course" ? 60 : 50;
     const title = typeof task?.title === "string" ? task.title.trim().slice(0, titleLimit) : "";
     if (!id || !title) return [];
     if (task.kind !== "course") return [{ id, title }];
@@ -118,7 +118,7 @@ function cleanTaskInput(tasks, existingTasks = []) {
       : `custom-${crypto.randomBytes(6).toString("hex")}`;
     const existing = existingById.get(id);
     const title = typeof raw?.title === "string"
-      ? raw.title.trim().slice(0, existing?.kind === "course" ? 60 : 30)
+      ? raw.title.trim().slice(0, existing?.kind === "course" ? 60 : 50)
       : "";
     if (!title) continue;
     if (existing?.kind === "course" && existing.title !== title) {
