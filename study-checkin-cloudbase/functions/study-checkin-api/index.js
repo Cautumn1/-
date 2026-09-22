@@ -765,7 +765,7 @@ async function startFocus(event) {
     pausedDurationMs: 0,
   };
   await updateFocusPresence(definition.id, session);
-  return { session: publicFocusSession(session) };
+  return { session: publicFocusSession(session), serverNow: Date.now() };
 }
 
 async function setFocusPaused(event) {
@@ -776,7 +776,7 @@ async function setFocusPaused(event) {
   if (!active) throw new PublicError("当前没有进行中的自习");
 
   const alreadyPaused = Boolean(active.pausedAt);
-  if (alreadyPaused === event.paused) return { session: active };
+  if (alreadyPaused === event.paused) return { session: active, serverNow: Date.now() };
 
   const changedAt = Date.now();
   const session = {
@@ -787,7 +787,7 @@ async function setFocusPaused(event) {
       : active.pausedDurationMs + Math.max(0, changedAt - Number(active.pausedAt)),
   };
   await updateFocusPresence(definition.id, session);
-  return { session: publicFocusSession(session) };
+  return { session: publicFocusSession(session), serverNow: Date.now() };
 }
 
 async function stopFocus(event) {

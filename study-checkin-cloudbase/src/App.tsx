@@ -1,5 +1,6 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { callStudyApi } from "./cloudbase";
+import { createFocusClock, createFocusReadGuard, elapsedSeconds } from "./focus-clock";
 import quoteSource from "../../励志语录候选-1000条.md?raw";
 
 type Member = { id: string; userKey: "user1" | "user2"; name: string; color: string };
@@ -67,7 +68,7 @@ type FocusSummary = {
   todayTaskSecondsByMember: Record<string, Record<string, number>>;
 };
 type FocusStatus = Pick<FocusSummary, "serverNow" | "summaryRevision" | "activeByMember">;
-type FocusStartResult = { session: FocusSession };
+type FocusStartResult = { session: FocusSession; serverNow?: number };
 type FocusResult = {
   sessionId: string;
   day: string;
@@ -283,13 +284,6 @@ function millisecondsUntilNextStudyDay(now = Date.now()) {
   return Math.max(1000, nextBoundary - now + 50);
 }
 
-function elapsedSeconds(session: FocusSession | null | undefined, now: number) {
-  if (!session) return 0;
-  const endedAt = session.pausedAt ?? now;
-  const pausedDurationMs = Math.max(0, session.pausedDurationMs ?? 0);
-  return Math.max(0, Math.floor((endedAt - session.startedAt - pausedDurationMs) / 1000));
-}
-
 function pomodoroSnapshot(session: FocusSession | null | undefined, now: number): PomodoroSnapshot | null {
   if (!session || session.timerMode !== "pomodoro" || !session.pomodoro) return null;
   const focusSeconds = Math.max(1, session.pomodoro.focusMinutes) * 60;
@@ -355,6 +349,8 @@ export default function Home() {
     catch { return true; }
   });
   const [now, setNow] = useState(() => Date.now());
+  const [focusClock] = useState(() => createFocusClock());
+  const [focusReadGuard] = useState(() => createFocusReadGuard());
   const lastFocusRefresh = useRef(0);
   const summaryRevision = useRef("");
   const loadedDay = useRef("");
@@ -375,25 +371,33 @@ export default function Home() {
   }, []);
 
   const load = useCallback(async (identity: string) => {
+    const focusGeneration = focusReadGuard.capture();
     const requestedDay = localDay();
     const nextData = await callStudyApi<AppData>("getData", {
       token: identity,
       day: requestedDay,
     });
+    const acceptFocus = focusReadGuard.accepts(focusGeneration);
+    if (acceptFocus) {
+      focusClock.sync(nextData.focus.serverNow);
+      setNow(focusClock.now());
+      summaryRevision.current = nextData.focus.summaryRevision ?? "";
+    }
     lastFocusRefresh.current = Date.now();
-    summaryRevision.current = nextData.focus.summaryRevision ?? "";
     loadedDay.current = requestedDay;
     const myTasks = nextData.tasksByMember[nextData.me.id] ?? [];
-    setData({
+    setData((current) => ({
       ...nextData,
+      focus: !acceptFocus && current?.me.id === nextData.me.id ? current.focus : nextData.focus,
       planDays: Array.isArray(nextData.planDays) ? nextData.planDays : [{ day: requestedDay, tasks: myTasks }],
       taskTemplate: Array.isArray(nextData.taskTemplate) ? nextData.taskTemplate : [],
       courseTemplates: Array.isArray(nextData.courseTemplates) ? nextData.courseTemplates : [],
       overdueTasks: Array.isArray(nextData.overdueTasks) ? nextData.overdueTasks : [],
-    });
-  }, []);
+    }));
+  }, [focusClock, focusReadGuard]);
 
   const refreshFocus = useCallback(async (identity: string) => {
+    const focusGeneration = focusReadGuard.capture();
     const requestedDay = localDay();
     if (loadedDay.current && loadedDay.current !== requestedDay) {
       await load(identity);
@@ -403,6 +407,9 @@ export default function Home() {
       token: identity,
       day: requestedDay,
     });
+    if (!focusReadGuard.accepts(focusGeneration)) return;
+    focusClock.sync(status.serverNow);
+    setNow(focusClock.now());
     lastFocusRefresh.current = Date.now();
     if ((status.summaryRevision ?? "") !== summaryRevision.current) {
       await load(identity);
@@ -412,7 +419,7 @@ export default function Home() {
       ...current,
       focus: { ...current.focus, ...status, activeByMember: status.activeByMember },
     } : current);
-  }, [load]);
+  }, [load, focusClock, focusReadGuard]);
 
   useEffect(() => {
     if (!token) return;
@@ -420,7 +427,7 @@ export default function Home() {
     let cancelled = false;
     const scheduleBoundaryRefresh = () => {
       boundaryTimer = window.setTimeout(async () => {
-        setNow(Date.now());
+        setNow(focusClock.now());
         if (document.visibilityState === "visible") {
           try { await load(token); } catch { /* The normal refresh loop will retry. */ }
         }
@@ -432,7 +439,7 @@ export default function Home() {
       cancelled = true;
       if (boundaryTimer !== null) window.clearTimeout(boundaryTimer);
     };
-  }, [load, token]);
+  }, [load, token, focusClock]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -473,10 +480,10 @@ export default function Home() {
     if (!token) return;
     let timer: number | null = null;
     const configureClock = () => {
-      setNow(Date.now());
+      setNow(focusClock.now());
       if (timer !== null) window.clearInterval(timer);
       timer = document.visibilityState === "visible" && hasRunningClock
-        ? window.setInterval(() => setNow(Date.now()), 1000)
+        ? window.setInterval(() => setNow(focusClock.now()), 1000)
         : null;
     };
     configureClock();
@@ -485,7 +492,7 @@ export default function Home() {
       if (timer !== null) window.clearInterval(timer);
       document.removeEventListener("visibilitychange", configureClock);
     };
-  }, [hasRunningClock, token]);
+  }, [hasRunningClock, token, focusClock]);
 
   const myTasks = data ? data.tasksByMember[data.me.id] ?? [] : [];
   const editingTasks = data?.planDays.find((entry) => entry.day === editingDay)?.tasks ?? myTasks;
@@ -737,6 +744,7 @@ export default function Home() {
 
   async function startFocus(taskId: string | null, pomodoro: PomodoroConfig | null) {
     if (!token || focusBusy) return;
+    focusReadGuard.begin();
     setFocusBusy(true);
     setError("");
     try {
@@ -748,20 +756,22 @@ export default function Home() {
         focusMinutes: pomodoro?.focusMinutes,
         breakMinutes: pomodoro?.breakMinutes,
       });
+      focusClock.sync(result.serverNow);
       lastFocusRefresh.current = Date.now();
       setData((current) => current ? {
         ...current,
         focus: {
           ...current.focus,
-          serverNow: Date.now(),
+          serverNow: result.serverNow ?? current.focus.serverNow,
           activeByMember: { ...current.focus.activeByMember, [current.me.id]: result.session },
         },
       } : current);
-      setNow(Date.now());
+      setNow(focusClock.now());
       setFocusPicker(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "开始自习失败");
     } finally {
+      focusReadGuard.end();
       setFocusBusy(false);
     }
   }
@@ -781,6 +791,7 @@ export default function Home() {
 
   async function stopFocus() {
     if (!token || focusBusy) return;
+    focusReadGuard.begin();
     setFocusBusy(true);
     setError("");
     try {
@@ -808,7 +819,6 @@ export default function Home() {
           ...current,
           focus: {
             ...current.focus,
-            serverNow: Date.now(),
             summaryRevision: result.summaryRevision ?? current.focus.summaryRevision,
             activeByMember: { ...current.focus.activeByMember, [memberId]: null },
             todaySecondsByMember,
@@ -820,29 +830,33 @@ export default function Home() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "结束自习失败");
     } finally {
+      focusReadGuard.end();
       setFocusBusy(false);
     }
   }
 
   async function setFocusPaused(paused: boolean) {
     if (!token || focusBusy || !myActive) return;
+    focusReadGuard.begin();
     setFocusBusy(true);
     setError("");
     try {
       const result = await callStudyApi<FocusStartResult>("setFocusPaused", { token, paused });
+      focusClock.sync(result.serverNow);
       lastFocusRefresh.current = Date.now();
       setData((current) => current ? {
         ...current,
         focus: {
           ...current.focus,
-          serverNow: Date.now(),
+          serverNow: result.serverNow ?? current.focus.serverNow,
           activeByMember: { ...current.focus.activeByMember, [current.me.id]: result.session },
         },
       } : current);
-      setNow(Date.now());
+      setNow(focusClock.now());
     } catch (err) {
       setError(err instanceof Error ? err.message : paused ? "暂停失败" : "继续失败");
     } finally {
+      focusReadGuard.end();
       setFocusBusy(false);
     }
   }
