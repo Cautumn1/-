@@ -103,6 +103,7 @@ type HistoryData = {
 type AppView = "dashboard" | "history";
 type TemplateApplyResult = { appliedDays: string[]; skippedDays: string[] };
 type TaskImportResult = { imported: number; skippedDuplicates: number; affectedDays: string[] };
+type TaskSaveOptions = { removeUnfinishedTaskIds?: string[] };
 
 type ChangelogEntry = {
   version: string;
@@ -615,10 +616,10 @@ export default function Home() {
     setEditing(true);
   }
 
-  async function saveTasks(tasks: StudyTask[]) {
+  async function saveTasks(tasks: StudyTask[], options: TaskSaveOptions = {}) {
     if (!token) return;
     setError("");
-    await callStudyApi("saveTasks", { token, day: editingDay, tasks });
+    await callStudyApi("saveTasks", { token, day: editingDay, tasks, ...options });
     await load(token);
     setEditing(false);
   }
@@ -1146,6 +1147,7 @@ export default function Home() {
         <TaskEditor
           day={editingDay}
           tasks={editingTasks}
+          activeTaskId={myActive?.day === editingDay ? myActive.taskId : null}
           onClose={() => setEditing(false)}
           onSave={saveTasks}
           onReset={() => applyDefaultTaskTemplate("today", true)}
@@ -2147,16 +2149,34 @@ function CourseTemplateEditor({ template, planDays, busy, onBack, onClose, onSav
   );
 }
 
-function TaskEditor({ day, tasks, onClose, onSave, onReset }: {
+function TaskEditor({ day, tasks, activeTaskId, onClose, onSave, onReset }: {
   day: string;
   tasks: StudyTask[];
+  activeTaskId: string | null;
   onClose: () => void;
-  onSave: (tasks: StudyTask[]) => Promise<void>;
+  onSave: (tasks: StudyTask[], options?: TaskSaveOptions) => Promise<void>;
   onReset: () => Promise<TemplateApplyResult>;
 }) {
   const [drafts, setDrafts] = useState<DraftTask[]>(tasks.map((task) => ({ ...task, key: task.id })));
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [removedUnfinishedIds, setRemovedUnfinishedIds] = useState<string[]>([]);
+  const [bulkDeleteMessage, setBulkDeleteMessage] = useState("");
+  const completedIds = new Set(tasks.filter((task) => task.completed).map((task) => task.id));
+  const canRemoveUnfinished = (task: DraftTask) => !completedIds.has(task.id)
+    && !task.completed && (!activeTaskId || task.id !== activeTaskId);
+  const unfinishedCount = drafts.filter(canRemoveUnfinished).length;
+
+  function removeUnfinished() {
+    const removed = drafts.filter(canRemoveUnfinished);
+    if (!removed.length) return;
+    setRemovedUnfinishedIds((current) => Array.from(new Set([
+      ...current, ...removed.map((task) => task.id).filter(Boolean),
+    ])));
+    setDrafts((current) => current.filter((task) => !canRemoveUnfinished(task)));
+    setMessage("");
+    setBulkDeleteMessage(`已从编辑列表移除 ${removed.length} 项未完成任务，点击保存后生效。`);
+  }
 
   function addTask() {
     if (drafts.length >= MAX_TASKS_PER_DAY) return;
@@ -2178,7 +2198,7 @@ function TaskEditor({ day, tasks, onClose, onSave, onReset }: {
     const cleaned = drafts.map(({ key: _key, ...task }) => ({ ...task, title: task.title.trim() })).filter((task) => task.title);
     setSaving(true);
     setMessage("");
-    try { await onSave(cleaned); } catch (err) {
+    try { await onSave(cleaned, { removeUnfinishedTaskIds: removedUnfinishedIds }); } catch (err) {
       setMessage(err instanceof Error ? err.message : "保存失败");
       setSaving(false);
     }
@@ -2198,8 +2218,15 @@ function TaskEditor({ day, tasks, onClose, onSave, onReset }: {
   return (
     <div className="modal-backdrop">
       <section className="login-card task-editor" role="dialog" aria-modal="true" aria-label={`编辑${day}任务`}>
-        <div className="editor-heading"><div><span>{day === localDay() ? "今日计划" : "单日计划"}</span><h2>编辑{formatPlanDate(day)}的任务</h2></div><button onClick={onClose} aria-label="关闭">×</button></div>
+        <div className="editor-heading"><div><span>{day === localDay() ? "今日计划" : "单日计划"}</span><h2>编辑{formatPlanDate(day)}的任务</h2></div><button onClick={onClose} disabled={saving} aria-label="关闭">×</button></div>
         <p className="login-copy">这里只修改这一天，不会改变默认模板。最多添加 {MAX_TASKS_PER_DAY} 项；修改自动课程标题会按新任务处理。</p>
+        <div className="task-editor-bulk-actions">
+          <button type="button" className="danger-button" onClick={removeUnfinished} disabled={saving || unfinishedCount === 0}>
+            删除当天未完成任务{unfinishedCount > 0 ? `（${unfinishedCount}项）` : ""}
+          </button>
+          <small>保留已完成和正在计时的任务，已有学习时长保留。点击保存后生效。</small>
+          {bulkDeleteMessage && <p role="status">{bulkDeleteMessage}</p>}
+        </div>
         <div className="task-editor-list">
           {drafts.map((task, index) => (
             <div key={task.key}>
@@ -2208,18 +2235,19 @@ function TaskEditor({ day, tasks, onClose, onSave, onReset }: {
                 value={task.title}
                 maxLength={task.kind === "course" ? 60 : 50}
                 placeholder="输入学习任务"
+                disabled={saving}
                 onChange={(event) => setDrafts((current) => current.map((item) => item.key === task.key ? { ...item, title: event.target.value } : item))}
               />
               <div className="task-order-buttons" aria-label={`调整第 ${index + 1} 项顺序`}>
                 <button onClick={() => moveTask(task.key, -1)} disabled={saving || index === 0} aria-label={`上移第 ${index + 1} 项`}>↑</button>
                 <button onClick={() => moveTask(task.key, 1)} disabled={saving || index === drafts.length - 1} aria-label={`下移第 ${index + 1} 项`}>↓</button>
               </div>
-              <button onClick={() => setDrafts((current) => current.filter((item) => item.key !== task.key))} aria-label={`删除第 ${index + 1} 项`}>−</button>
+              <button onClick={() => setDrafts((current) => current.filter((item) => item.key !== task.key))} disabled={saving} aria-label={`删除第 ${index + 1} 项`}>−</button>
             </div>
           ))}
           {!drafts.length && <p>任务列表为空，点击下方按钮添加。</p>}
         </div>
-        <button className="add-task-button" onClick={addTask} disabled={drafts.length >= MAX_TASKS_PER_DAY}>＋ 添加一项任务</button>
+        <button className="add-task-button" onClick={addTask} disabled={saving || drafts.length >= MAX_TASKS_PER_DAY}>＋ 添加一项任务</button>
         {message && <p className="form-error">{message}</p>}
         <div className="editor-actions">
           <button className="secondary-button" onClick={reset} disabled={saving}>套用默认模板</button>

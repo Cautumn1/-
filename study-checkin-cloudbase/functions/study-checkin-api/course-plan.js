@@ -167,7 +167,7 @@ function courseTasksForDay(member, day, options = {}) {
 function makeupTasksForDay(member, day) {
   const actions = Array.isArray(member?.courseActions) ? member.courseActions : [];
   return actions.flatMap((action) => {
-    if (action?.mode !== "move" || action.targetDay !== day || !action.task) return [];
+    if (action?.mode !== "move" || action.targetDay !== day || !action.task || action.removedFromPlan) return [];
     return [{
       ...action.task,
       completed: undefined,

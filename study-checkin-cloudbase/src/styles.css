@@ -352,6 +352,9 @@ button { color: inherit; }
 .focus-result > p { margin: 0 0 22px; color: #58657e; }
 .focus-result-close { width: 100%; }
 .task-editor { width: min(620px,100%); }
+.task-editor-bulk-actions { display: grid; gap: 8px; margin: 0 0 16px; }
+.task-editor-bulk-actions > button { justify-self: start; max-width: 100%; white-space: normal; }
+.task-editor-bulk-actions > small, .task-editor-bulk-actions > p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .editor-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .editor-heading span { color: var(--blue); font-size: 11px; font-weight: 800; letter-spacing: .12em; }
 .editor-heading h2 { margin-top: 5px; }

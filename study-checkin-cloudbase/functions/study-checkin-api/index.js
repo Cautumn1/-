@@ -1104,6 +1104,9 @@ async function saveTasks(event) {
 
   const nextIds = new Set(tasks.map((task) => task.id));
   const removedIds = new Set(existingTasks.filter((task) => !nextIds.has(task.id)).map((task) => task.id));
+  const unfinishedRemovalIds = new Set(Array.isArray(event.removeUnfinishedTaskIds)
+    ? event.removeUnfinishedTaskIds.filter((id) => typeof id === "string" && removedIds.has(id))
+    : []);
   if (removedIds.size) {
     const [rows, presence, focusState] = await Promise.all([
       db.collection("checkins").where({ groupId: GROUP_ID, day: event.day }).limit(100).get(),
@@ -1114,7 +1117,7 @@ async function saveTasks(event) {
       row.memberId === member.id && removedIds.has(row.taskId || row.task)
     ));
     const hasStudyRecord = (focusState.days?.[event.day]?.segments || []).some((segment) => (
-      removedIds.has(segment.taskId)
+      removedIds.has(segment.taskId) && !unfinishedRemovalIds.has(segment.taskId)
     ));
     const active = presence.activeByMember?.[member.id] || null;
     if (hasCompleted || hasStudyRecord || (active?.day === event.day && removedIds.has(active.taskId))) {
@@ -1126,6 +1129,17 @@ async function saveTasks(event) {
     [`taskOverrides.${event.day}`]: command.set(tasks),
     updatedAt: Date.now(),
   };
+  // Keep the original backlog action handled, but stop recreating a removed
+  // make-up task on this date. Study segments and check-ins remain untouched.
+  const actions = Array.isArray(member.courseActions) ? member.courseActions : [];
+  if (actions.some((action) => action?.mode === "move" && action.targetDay === event.day
+    && removedIds.has(action.task?.id))) {
+    update.courseActions = command.set(actions.map((action) => (
+      action?.mode === "move" && action.targetDay === event.day && removedIds.has(action.task?.id)
+        ? { ...action, removedFromPlan: true }
+        : action
+    )));
+  }
   for (const oldDay of days.slice(60)) {
     if (oldDay !== event.day) update[`taskOverrides.${oldDay}`] = command.remove();
   }
