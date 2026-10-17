@@ -80,7 +80,7 @@
 
 ### 3.6 版本与更新日志
 
-- 当前前端版本为 `v1.6.0`。
+- 当前前端版本为 `v1.7.0`；本次接手及 ChatGPT 接入不递增版本号、不新增前端更新日志。
 - 前端静态维护版本号和历史更新日志，不访问数据库。
 - 每次发布新版本后，同一浏览器第一次打开或刷新页面时自动弹出更新日志；用户确认后用本地存储键 `study-last-seen-version` 记录已读版本，该版本不再重复弹出。
 - 已补录 `v1.0.0` 至当前版本的主要更新记录；以后发布时同步递增版本号并把更新内容追加到前端日志列表。
@@ -170,7 +170,7 @@ study-checkin-cloudbase/                 工作区根目录
 
 - React `19.2.6`
 - React DOM `19.2.6`
-- Vite `8.0.13`
+- Vite `8.2.2`
 - TypeScript `5.9.3`
 - `@cloudbase/js-sdk` `3.7.0`
 
@@ -200,6 +200,7 @@ study-checkin-cloudbase/                 工作区根目录
 - `startFocus`
 - `setFocusPaused`
 - `stopFocus`
+- `getAssistantConnection`、`authorizeAssistant`、`denyAssistant`、`revokeAssistant`（ChatGPT连接管理）
 
 `getData` 只读取当前学习日；历史统计由 `getStudyHistory` 单独按需读取。自习状态文档保留最近 730 天的每日总时长汇总，同时继续只保留最近 60 天的详细任务时长，以控制文档体积并兼容旧数据。
 
@@ -327,3 +328,11 @@ study-checkin-cloudbase/                 工作区根目录
 ```text
 请先完整阅读根目录 AGENTS.md 和 PROJECT_CONTEXT.md，再检查当前代码和 CloudBase 实际状态后继续。不要创建新 CloudBase 环境，不要开通或升级任何付费资源；保持任务稳定 ID、客户端数据库禁写和低资源点同步策略。
 ```
+
+## 15. ChatGPT 学习计划接入（2026-10-17）
+
+在现有 `study-checkin-api` 内实现受 OAuth + PKCE 保护的 MCP 接口，前端侧边栏增加“连接ChatGPT”。接口默认关闭，必须先绑定蔡使用的匿名浏览器，再由用户在网站确认插件授权；只读写蔡的计划，不操作刘、打卡或计时。
+
+计划保存带修订标记，使用数据库事务避免覆盖并发进度，保留稳定任务ID、受保护任务及学习时长；维持原有低频同步。协议、浏览器绑定、部署顺序和测试说明见 `study-checkin-cloudbase/CHATGPT_CONNECTION.md`。
+
+这部分代码已完成本地测试与构建；截至本段编写时，新功能的云端发布授权与真实ChatGPT连接尚待完成，不能视为已接通。

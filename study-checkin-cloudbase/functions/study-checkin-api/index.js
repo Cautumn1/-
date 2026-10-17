@@ -14,6 +14,7 @@ const {
   tasksForScheduleDay,
 } = require("./course-plan");
 const { mergeImportedTasks, parseTaskImportText } = require("./task-import");
+const { createStudyAssistant } = require("./study-assistant");
 
 const app = tcb.init({ env: tcb.SYMBOL_DEFAULT_ENV });
 const db = app.database();
@@ -1314,9 +1315,28 @@ async function resetTasks(event) {
   return { reset: true };
 }
 
+const assistant = createStudyAssistant({ db, first, PublicError, tasksFor, dayInChina, dateOffset,
+  focusStateId, loadFocusState, loadFocusPresence, studyDurationSeconds,
+  definitions: MEMBER_DEFINITIONS, presenceId: FOCUS_PRESENCE_ID, groupId: GROUP_ID,
+  baseUrl: () => typeof process !== "undefined" ? process.env.STUDY_ASSISTANT_BASE_URL : "",
+  ownerUidHash: () => typeof process !== "undefined" ? process.env.STUDY_ASSISTANT_OWNER_UID_HASH : "",
+  callerUid: () => app.auth().getUserInfo().uid,
+});
+
 exports.main = async (event) => {
   try {
+    // HTTP has a separate, authenticated allowlist. Never dispatch SDK actions
+    // from an untrusted HTTP body (e.g. saveTasks/resetTasks/startFocus).
+    if (event.httpMethod) return await assistant.http(event);
     switch (event.action) {
+      case "getAssistantConnection":
+        return success(await assistant.connectionStatus(event.token));
+      case "authorizeAssistant":
+        return success(await assistant.authorize(event));
+      case "denyAssistant":
+        return success(assistant.deny(event));
+      case "revokeAssistant":
+        return success(await assistant.revoke(event.token));
       case "selectUser":
         return success(await selectUser(event));
       case "getData":

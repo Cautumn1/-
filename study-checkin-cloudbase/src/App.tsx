@@ -1,6 +1,7 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { callStudyApi } from "./cloudbase";
 import { createFocusClock, createFocusReadGuard, elapsedSeconds } from "./focus-clock";
+import AssistantConnection from "./AssistantConnection";
 import quoteSource from "../../励志语录候选-1000条.md?raw";
 
 type Member = { id: string; userKey: "user1" | "user2"; name: string; color: string };
@@ -344,6 +345,7 @@ export default function Home() {
   const [immersiveFocus, setImmersiveFocus] = useState(false);
   const [view, setView] = useState<AppView>("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(() => new URLSearchParams(window.location.search).has("assistant_authorize"));
   const [availableVersion, setAvailableVersion] = useState<string | null>(null);
   const [showChangelog, setShowChangelog] = useState(() => {
     try { return window.localStorage.getItem(LAST_SEEN_VERSION_KEY) !== APP_VERSION; }
@@ -920,6 +922,13 @@ export default function Home() {
     setShowChangelog(false);
   }
 
+  const closeAssistant = useCallback(() => {
+    setAssistantOpen(false);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("assistant_authorize");
+    window.history.replaceState(null, "", url.href);
+  }, []);
+
   if (loading) {
     return <div className="loading-screen"><span className="loader" />正在加载今天的学习计划…</div>;
   }
@@ -933,7 +942,9 @@ export default function Home() {
         onNavigate={navigate}
         onSwitchUser={logout}
         onClose={() => setSidebarOpen(false)}
+        onAssistant={() => { setAssistantOpen(true); setSidebarOpen(false); }}
       />
+      {assistantOpen && token && data && <AssistantConnection token={token} name={data.me.name} onClose={closeAssistant} />}
       <button className="mobile-menu-button" onClick={() => setSidebarOpen(true)} aria-label="打开侧边栏">☰</button>
       {sidebarOpen && <button className="sidebar-scrim" onClick={() => setSidebarOpen(false)} aria-label="关闭侧边栏" />}
 
@@ -1201,13 +1212,14 @@ export default function Home() {
   );
 }
 
-function Sidebar({ member, activeView, open, onNavigate, onSwitchUser, onClose }: {
+function Sidebar({ member, activeView, open, onNavigate, onSwitchUser, onClose, onAssistant }: {
   member?: Member;
   activeView: AppView;
   open: boolean;
   onNavigate: (view: AppView) => void;
   onSwitchUser: () => void;
   onClose: () => void;
+  onAssistant: () => void;
 }) {
   return (
     <aside className={`app-sidebar ${open ? "open" : ""}`} aria-label="主导航">
@@ -1225,6 +1237,7 @@ function Sidebar({ member, activeView, open, onNavigate, onSwitchUser, onClose }
         </button>
       </nav>
       <div className="sidebar-spacer" />
+      {member?.userKey === "user1" && <button className="sidebar-assistant" onClick={onAssistant}>连接ChatGPT</button>}
       <div className="sidebar-version">VERSION {APP_VERSION}</div>
       {member && (
         <button className="sidebar-user" onClick={onSwitchUser} aria-label={`当前身份${member.name}，切换用户`}>

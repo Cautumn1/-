@@ -4,7 +4,7 @@ const vm = require("node:vm");
 const { createRequire } = require("node:module");
 
 // Isolated in-memory CloudBase boundary; execute the real API handlers.
-function createStudyApi(documents = {}) {
+function createStudyApi(documents = {}, options = {}) {
   const store = structuredClone(documents);
   const writes = [];
   const range = (matches) => ({ matches, and: (other) => range((value) => matches(value) && other.matches(value)) });
@@ -24,7 +24,7 @@ function createStudyApi(documents = {}) {
         skip(value) { offset = value; return this; },
         limit(value) { limit = value; return this; },
         async get() {
-          return { data: structuredClone(Object.values(table).filter((row) => Object.entries(filter).every(([key, value]) => (
+          return { data: structuredClone(Object.entries(table).map(([id, row]) => ({ _id: id, ...row })).filter((row) => Object.entries(filter).every(([key, value]) => (
             typeof value?.matches === "function" ? value.matches(row[key]) : row[key] === value
           ))).slice(offset, offset + limit)) };
         },
@@ -32,7 +32,7 @@ function createStudyApi(documents = {}) {
     }
     return {
       where: query,
-      doc(id) { return {
+      doc(id) { return { _coll: name, id,
         async get() { return { data: table[id] ? [structuredClone(table[id])] : [] }; },
         async set(value) { table[id] = structuredClone(value); writes.push([name, id, "set"]); },
         async update(changes) {
@@ -51,12 +51,36 @@ function createStudyApi(documents = {}) {
       }; },
     };
   } };
+  db.startTransaction = async () => {
+    options.beforeTransaction?.(store);
+    const readSet = [];
+    const pending = [];
+    return {
+      async get(ref) {
+        const value = structuredClone(store[ref._coll]?.[ref.id] || null);
+        readSet.push([ref._coll, ref.id, value]);
+        return { data: () => structuredClone(value) };
+      },
+      async set(ref, value) { pending.push([ref._coll, ref.id, structuredClone(value)]); },
+      async commit() {
+        options.beforeCommit?.(store);
+        for (const [name, id, original] of readSet) {
+          if (JSON.stringify(store[name]?.[id] || null) !== JSON.stringify(original)) throw new Error("Transaction conflict");
+        }
+        for (const [name, id, value] of pending) {
+          (store[name] ??= {})[id] = value;
+          writes.push([name, id, "transaction"]);
+        }
+      },
+      async rollback() {},
+    };
+  };
   const apiPath = path.join(__dirname, "../../functions/study-checkin-api/index.js");
   const apiRequire = createRequire(apiPath);
   const context = {
-    exports: {}, console,
+    exports: {}, console, process: { env: options.env || {} },
     require: (name) => name === "@cloudbase/node-sdk"
-      ? { init: () => ({ database: () => db }) } : apiRequire(name),
+      ? { init: () => ({ database: () => db, auth: () => ({ getUserInfo: () => ({ uid: options.uid || "fixture-uid" }) }) }) } : apiRequire(name),
   };
   vm.runInNewContext(fs.readFileSync(apiPath, "utf8") + "\nexports.tasksForTest = tasksFor;", context);
   return { store, writes, call: context.exports.main, tasksFor: context.exports.tasksForTest };
