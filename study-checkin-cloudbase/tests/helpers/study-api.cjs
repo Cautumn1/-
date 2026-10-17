@@ -56,12 +56,14 @@ function createStudyApi(documents = {}, options = {}) {
     const readSet = [];
     const pending = [];
     return {
-      async get(ref) {
-        const value = structuredClone(store[ref._coll]?.[ref.id] || null);
-        readSet.push([ref._coll, ref.id, value]);
-        return { data: () => structuredClone(value) };
-      },
-      async set(ref, value) { pending.push([ref._coll, ref.id, structuredClone(value)]); },
+      collection(name) { return { doc(id) { return {
+        async get() {
+          const value = structuredClone(store[name]?.[id] || null);
+          readSet.push([name, id, value]);
+          return { data: value };
+        },
+        async set(value) { pending.push([name, id, structuredClone(value)]); },
+      }; } }; },
       async commit() {
         options.beforeCommit?.(store);
         for (const [name, id, original] of readSet) {

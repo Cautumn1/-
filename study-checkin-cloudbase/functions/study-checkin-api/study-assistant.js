@@ -75,11 +75,17 @@ function createStudyAssistant(deps) {
     if (callerFingerprint() !== deps.ownerUidHash()) fail("请使用已绑定的浏览器确认或撤销连接");
   }
   async function transaction(work) {
-    // Use the get/set API shipped by the pinned @cloudbase/database dependency.
-    // Do not use runTransaction: that SDK version retries even validation errors.
+    // The package also contains an obsolete transaction.js. Its actual entry
+    // imports transaction/index.js, whose API is collection().doc().get/set.
     const tx = await db.startTransaction();
-    const read = async (ref) => (await tx.get(ref)).data() || null;
-    try { const result = await work(tx, read); await tx.commit(); return result; }
+    const document = (ref) => tx.collection(ref._coll).doc(ref.id);
+    const checked = (result) => {
+      if (result?.code) throw new Error("Study assistant database operation failed");
+      return result;
+    };
+    const read = async (ref) => first(checked(await document(ref).get()));
+    const writer = { set: async (ref, data) => checked(await document(ref).set(data)) };
+    try { const result = await work(writer, read); await tx.commit(); return result; }
     catch (error) { await tx.rollback().catch(() => {}); throw error; }
   }
   function usableGrant(grant, tokenHash) {
