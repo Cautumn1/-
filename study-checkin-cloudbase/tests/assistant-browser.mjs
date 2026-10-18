@@ -18,6 +18,7 @@ export async function callStudyApi(action,payload={}) {
  if(action==='getData')return {me,members,tasksByMember:{'study-user-1':tasks,'study-user-2':[{id:'liu',title:'刘的任务',completed:false}]},planDays:[{day,tasks}],taskTemplate:tasks,courseTemplates:[],overdueTasks:[],repeatDaily:false,focus};
  if(action==='getFocusStatus')return focus;
  if(action==='getAssistantConnection')return {configured:query.get('connection')!=='disabled',connected,mcpUrl:'https://a1-d4gbxgxqmc01c0e55-1462114738.ap-shanghai.app.tcloudbase.com/study-assistant/mcp',setupFingerprint:'a'.repeat(64)};
+ if(action==='diagnoseAssistantConnection')return {available:true};
  if(action==='revokeAssistant'){connected=false;return {revoked:true};}
  if(action==='authorizeAssistant')throw new Error('这是本地验收，未建立真实连接。');
  if(action==='startFocus'){active={id:'qa-focus',memberId:me.id,day,taskId:payload.taskId||null,taskTitle:'自由自习',startedAt:Date.now(),timerMode:payload.timerMode,pomodoro:payload.timerMode==='pomodoro'?{focusMinutes:payload.focusMinutes,breakMinutes:payload.breakMinutes}:null};return {session:active,serverNow:Date.now()};}

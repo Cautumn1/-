@@ -1331,6 +1331,8 @@ exports.main = async (event) => {
     switch (event.action) {
       case "getAssistantConnection":
         return success(await assistant.connectionStatus(event.token));
+      case "diagnoseAssistantConnection":
+        return success(await assistant.diagnose(event.token));
       case "authorizeAssistant":
         return success(await assistant.authorize(event));
       case "denyAssistant":

@@ -200,7 +200,7 @@ study-checkin-cloudbase/                 工作区根目录
 - `startFocus`
 - `setFocusPaused`
 - `stopFocus`
-- `getAssistantConnection`、`authorizeAssistant`、`denyAssistant`、`revokeAssistant`（ChatGPT连接管理）
+- `getAssistantConnection`、`diagnoseAssistantConnection`、`authorizeAssistant`、`denyAssistant`、`revokeAssistant`（ChatGPT连接管理）
 
 `getData` 只读取当前学习日；历史统计由 `getStudyHistory` 单独按需读取。自习状态文档保留最近 730 天的每日总时长汇总，同时继续只保留最近 60 天的详细任务时长，以控制文档体积并兼容旧数据。
 
@@ -335,4 +335,8 @@ study-checkin-cloudbase/                 工作区根目录
 
 计划保存带修订标记，使用数据库事务避免覆盖并发进度，保留稳定任务ID、受保护任务及学习时长；维持原有低频同步。协议、浏览器绑定、部署顺序和测试说明见 `study-checkin-cloudbase/CHATGPT_CONNECTION.md`。
 
-这部分代码已完成本地测试与构建；截至本段编写时，新功能的云端发布授权与真实ChatGPT连接尚待完成，不能视为已接通。
+2026-10-18 已接通：用户明确授权发布、绑定当前Edge浏览器及创建个人插件“自习计划”，网站和ChatGPT均确认连接成功。已在原“学习计划安排”对话完成真实读取、原样保存与回读核验；原样保存返回 `saved: true, unchanged: true`，没有改变学习内容。无改动保存只写连接请求回执，不创建单日覆盖，不触发对方汇总刷新。
+
+40项本地回归、授权/并发保护测试和实际安装SDK入口的契约测试均通过，构建通过。前端已独立核验线上文件哈希。腾讯云日志仍未开通；故障定位使用实际SDK与仅绑定浏览器可用的只读连接检查，不启用付费日志。实际SDK事务入口为 `transaction/index.js` 的 `collection().doc().get/set`，不能使用同包遗留 `transaction.js` 的旧API。
+
+原学习计划对话已要求今后先读取云端真实进度，按用户安排/调整要求保存并回读核验，草稿或讨论不写入；不再沿用“默认旧任务全部已完成”的推断规则。网站未记录的词数、视频位置或口头补充时长仍须区分，不能伪装为云端记录。

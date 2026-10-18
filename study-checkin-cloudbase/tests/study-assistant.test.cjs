@@ -72,6 +72,33 @@ test("HTTP默认关闭；未授权不能读取数据或绕过SDK修改任务", a
   assert.equal(api.writes.length, 0);
 });
 
+test("连接检查只允许绑定浏览器，失败仅返回阶段和安全错误码且不写数据", async () => {
+  const api = fixture({ beforeTransaction() { const error = new Error("private token should not be returned"); error.code = "DATABASE_TRANSACTION_UNAVAILABLE"; throw error; } });
+  const result = await api.call({ action: "diagnoseAssistantConnection", token: "user1" });
+  assert.equal(result.ok, true);
+  assert.equal(result.data.available, false);
+  assert.equal(result.data.stage, "transaction-start");
+  assert.equal(result.data.code, "DATABASE_TRANSACTION_UNAVAILABLE");
+  assert.equal(JSON.stringify(result).includes("private token"), false);
+  assert.equal(api.writes.length, 0);
+  const stranger = fixture({ uid: "other-browser" });
+  assert.equal((await stranger.call({ action: "diagnoseAssistantConnection", token: "user1" })).ok, false);
+});
+
+test("提交错误仅向授权端返回阶段和错误码，不返回原始错误信息", async () => {
+  const api = fixture({ beforeCommit() { const error = new Error("private credential data"); error.code = "DATABASE_TRANSACTION_WRITE_FAILED"; throw error; } });
+  const redirect = "https://chatgpt.com/connector_platform_oauth_redirect";
+  const result = await api.call({ action: "authorizeAssistant", token: "user1", authorization: {
+    response_type: "code", client_id: `study-chatgpt-${sha(redirect)}`, redirect_uri: redirect,
+    code_challenge: "a".repeat(43), code_challenge_method: "S256", state: "stage-test-state",
+    resource: `${BASE}/mcp`, scope: "study:read study:write",
+  } });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /事务提交：DATABASE_TRANSACTION_WRITE_FAILED/);
+  assert.equal(result.error.includes("private credential"), false);
+  assert.equal(api.store.sessions[GRANT], undefined);
+});
+
 test("只有管理员绑定的匿名浏览器可授权，不能仅凭选择蔡建立连接", async () => {
   const api = fixture({ uid: "another-browser" });
   const status = await api.call({ action: "getAssistantConnection", token: "user1" });
@@ -133,6 +160,22 @@ test("按修订号保存后重新读取：保护记录、稳定ID、模板和其
   assert.deepEqual(Array.from(replay.structuredContent.taskIds), Array.from(saved.structuredContent.taskIds));
   const reused = await tool(api, auth.access_token, "update_study_plan", { ...args, tasks: [] });
   assert.equal(reused.isError, true);
+});
+
+test("原样保存不创建单日覆盖，也不改学习状态或触发对方汇总刷新", async () => {
+  const api = fixture(); const auth = await connect(api);
+  const snapshot = (await tool(api, auth.access_token, "get_study_progress", { day: DAY })).structuredContent;
+  const memberBefore = structuredClone(api.store.members[MEMBER]);
+  const presenceBefore = structuredClone(api.store.sessions[PRESENCE]);
+  const result = await tool(api, auth.access_token, "update_study_plan", { day: DAY,
+    revision: snapshot.revision, requestId: "unchanged-save-check",
+    tasks: snapshot.tasks.map(({ id, title }) => ({ id, title })),
+  });
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  assert.equal(result.structuredContent.unchanged, true);
+  assert.deepEqual(api.store.members[MEMBER], memberBefore);
+  assert.deepEqual(api.store.sessions[PRESENCE], presenceBefore);
+  assert.equal(api.store.members[MEMBER].taskOverrides[DAY], undefined);
 });
 
 test("删除/改名受保护任务、未知或重复ID、50字和20项上限均由后端拒绝", async () => {

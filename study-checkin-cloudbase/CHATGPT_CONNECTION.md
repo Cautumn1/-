@@ -8,6 +8,7 @@
 - `update_study_plan`：保存含今天在内的7天中某一天的完整任务列表，返回保存后重新读取的进度。每天20项，普通标题50字，保持稳定ID。
 - 保留已完成、自习中（包括暂停）和已有学习时长的任务及标题。不操作打卡、计时、默认模板、刘或其他日期。自动课程保留原ID和标题。
 - 保存必须携带刚读取的修订标记与唯一请求ID。数据库事务检查并发修改；网络重试同一请求不重复新增。
+- 原样保存返回 `unchanged: true`，只记录连接请求回执，不创建单日覆盖、不改任务或自习状态、不触发对方汇总刷新。
 - 未记录的单词数量、网课位置等仍是未知。插件不会在聊天结束后持续监控。
 - 默认关闭；配置未完成时 HTTP 返回503，未授权返回401，不执行网页原有业务动作。
 
@@ -34,7 +35,8 @@
 5. 在**已经启用**的原 HTTP 网关添加以下路径到同一 `study-checkin-api`。须保留完整路径、查询字符串、请求头和请求体，禁止缓存；使用处理器返回的HTTP状态码、头和响应体。网关不代替这里的OAuth校验；原SDK的函数认证规则保持不变。
 
    - `/study-assistant`（前缀匹配，路径透传）
-   - `/.well-known/oauth-authorization-server/study-assistant`（OAuth元数据）
+
+   腾讯云网关将根目录 `/.well-known/*` 保留给系统，不能覆盖。授权元数据实际位于 `/study-assistant/.well-known/oauth-authorization-server`，受保护资源元数据通过401的 `WWW-Authenticate` 指明。已在当前ChatGPT表单实际验证：它可自动发现这一路径并选择DCR，不需要第二条根目录发现路由。
 
    `/study-assistant/oauth/authorize` 为授权跳转，`/oauth/register` 为限定ChatGPT回调的公开客户端登记，`/oauth/token` 为令牌交换，`/mcp` 为实际工具接口。对应地址均位于第一条路径下。
 
@@ -50,7 +52,14 @@
 
 ## 本地验证
 
+- 首次验证前，分别在前端与 `functions/study-checkin-api` 安装锁定依赖。SDK契约测试直接加载云函数实际安装的SDK，只替换网络传输，不连接云端。
 - `npm test`：原有回归与授权、数据隔离、稳定ID、限额、修订冲突、事务并发、撤销和重试测试。
 - `node tests/assistant-browser.mjs`：只在 `127.0.0.1:5174` 启动独立的内存界面夹具，替换CloudBase适配器，不访问生产数据。支持连接界面、`?connection=disabled` 未配置状态，以及普通/番茄钟操作的界面验收。该脚本不进入构建产物。
+
+## 已验证状态（2026-10-18）
+
+40项本地测试与构建通过。前端、原云函数、浏览器绑定和单一HTTP路由已发布，个人插件“自习计划”已连接；原“学习计划安排”对话已完成真实进度读取及原样保存后回读一致的验收。验收未增删学习任务，未改打卡或计时。
+
+SDK包中保留了同名旧事务文件，实际入口使用 `transaction/index.js`，以SDK契约测试为准。侧边栏的“检查连接”只允许绑定浏览器执行，检查事务读取与回滚，不持久写数据；失败只显示阶段和安全错误码，不显示令牌、原始异常或学习内容。无需开通腾讯云付费日志。
 
 官方参考：[ChatGPT自定义MCP](https://developers.openai.com/api/docs/guides/custom-mcp-server)、[OAuth要求](https://developers.openai.com/plugins/build/auth)、[CloudBase HTTP访问](https://docs.cloudbase.net/service/access-cloud-function)。

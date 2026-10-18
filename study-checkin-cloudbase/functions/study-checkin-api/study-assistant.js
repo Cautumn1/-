@@ -74,19 +74,48 @@ function createStudyAssistant(deps) {
     own(token);
     if (callerFingerprint() !== deps.ownerUidHash()) fail("请使用已绑定的浏览器确认或撤销连接");
   }
+  const errorCode = (error) => typeof error?.code === "string" && /^[a-zA-Z0-9_.-]{1,80}$/.test(error.code)
+    ? error.code : error instanceof TypeError ? "TypeError" : "UNKNOWN";
+  async function diagnose(token) {
+    boundOwner(token);
+    let stage = "grant-read";
+    let tx;
+    try {
+      const existing = await grantRef().get();
+      if (existing?.code) throw existing;
+      stage = "transaction-start";
+      tx = await db.startTransaction();
+      stage = "transaction-read";
+      const result = await tx.collection("sessions").doc(GRANT_ID).get();
+      if (result?.code) throw result;
+      stage = "transaction-rollback";
+      await tx.rollback(); tx = null;
+      return { available: true };
+    } catch (error) {
+      if (tx) await tx.rollback().catch(() => {});
+      return { available: false, stage, code: errorCode(error) };
+    }
+  }
   async function transaction(work) {
     // The package also contains an obsolete transaction.js. Its actual entry
     // imports transaction/index.js, whose API is collection().doc().get/set.
-    const tx = await db.startTransaction();
+    let tx;
+    try { tx = await db.startTransaction(); }
+    catch (error) { fail(`连接存储暂不可用（事务启动：${errorCode(error)}）`); }
     const document = (ref) => tx.collection(ref._coll).doc(ref.id);
+    let stage = "事务读取";
     const checked = (result) => {
-      if (result?.code) throw new Error("Study assistant database operation failed");
+      if (result?.code) throw result;
       return result;
     };
-    const read = async (ref) => first(checked(await document(ref).get()));
-    const writer = { set: async (ref, data) => checked(await document(ref).set(data)) };
-    try { const result = await work(writer, read); await tx.commit(); return result; }
-    catch (error) { await tx.rollback().catch(() => {}); throw error; }
+    const read = async (ref) => { stage = "事务读取"; return first(checked(await document(ref).get())); };
+    const writer = { set: async (ref, data) => { stage = "事务保存"; return checked(await document(ref).set(data)); } };
+    try { const result = await work(writer, read); stage = "事务提交"; await tx.commit(); return result; }
+    catch (error) {
+      await tx.rollback().catch(() => {});
+      if (error instanceof PublicError) throw error;
+      fail(`连接存储暂不可用（${stage}：${errorCode(error)}）`);
+    }
   }
   function usableGrant(grant, tokenHash) {
     return grant && !grant.revoked && grant.userKey === OWNER
@@ -204,9 +233,14 @@ function createStudyAssistant(deps) {
             ? { ...action, removedFromPlan: true } : action
         ));
       }
-      const receipt = { saved: true, day, taskIds: next.map((task) => task.id), requestId: args.requestId };
-      await tx.set(memberRef, nextMember);
-      await tx.set(presenceRef, { ...plain(presence), summaryRevision: random(), updatedAt: Date.now() });
+      const unchanged = canonical(next) === canonical(tasks);
+      const receipt = { saved: true, unchanged, day, taskIds: next.map((task) => task.id), requestId: args.requestId };
+      // A retry or an explicit "save unchanged" must not turn an automatically
+      // generated day into an override or trigger unnecessary partner refreshes.
+      if (!unchanged) {
+        await tx.set(memberRef, nextMember);
+        await tx.set(presenceRef, { ...plain(presence), summaryRevision: random(), updatedAt: Date.now() });
+      }
       await tx.set(grantRef(), { ...plain(grant), lastWrite: { requestId: args.requestId, payloadHash, result: receipt } });
       return receipt;
     });
@@ -381,7 +415,7 @@ function createStudyAssistant(deps) {
       return rpc({ isError: true, content: [{ type: "text", text: error instanceof PublicError ? error.message : "操作暂时失败；请先读取最新进度核实结果" }] });
     }
   }
-  return { http, connectionStatus, authorize, deny, revoke };
+  return { http, connectionStatus, authorize, deny, revoke, diagnose };
 }
 
 module.exports = { createStudyAssistant };

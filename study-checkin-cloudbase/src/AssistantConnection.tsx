@@ -103,6 +103,16 @@ export default function AssistantConnection({ token, name, onClose }: {
     catch { setMessage("复制未成功，请选中上方连接地址后复制。"); }
   }
 
+  async function checkConnection() {
+    setBusy(true); setMessage("");
+    try {
+      const result = await callStudyApi<{ available: boolean; stage?: string; code?: string }>("diagnoseAssistantConnection", { token });
+      const stages: Record<string, string> = { "grant-read": "连接读取", "transaction-start": "事务启动", "transaction-read": "事务读取", "transaction-rollback": "事务回滚" };
+      setMessage(result.available ? "连接存储检查通过。" : `连接检查未通过：${stages[result.stage || ""] || "存储检查"}（${result.code || "UNKNOWN"}）。`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "检查暂时失败"); }
+    finally { setBusy(false); }
+  }
+
   const scope = request.authorization?.scope || "study:read study:write";
   return (
     <div className="modal-backdrop">
@@ -140,6 +150,7 @@ export default function AssistantConnection({ token, name, onClose }: {
               {connection.connected && <button className="danger-button" onClick={revoke} disabled={busy}>{busy ? "正在撤销…" : "撤销ChatGPT连接"}</button>}
             </>}
         </>}
+        {token === "user1" && connection?.configured && <button className="secondary-button" onClick={checkConnection} disabled={busy}>检查连接</button>}
         {message && <p className="assistant-message" role="status">{message}</p>}
       </section>
     </div>
