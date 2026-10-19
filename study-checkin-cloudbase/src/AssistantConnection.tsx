@@ -106,9 +106,13 @@ export default function AssistantConnection({ token, name, onClose }: {
   async function checkConnection() {
     setBusy(true); setMessage("");
     try {
-      const result = await callStudyApi<{ available: boolean; stage?: string; code?: string }>("diagnoseAssistantConnection", { token });
+      const result = await callStudyApi<{ available: boolean; stage?: string; code?: string; lastOAuthError?: { code: string; at: number } }>("diagnoseAssistantConnection", { token });
       const stages: Record<string, string> = { "grant-read": "连接读取", "transaction-start": "事务启动", "transaction-read": "事务读取", "transaction-rollback": "事务回滚" };
-      setMessage(result.available ? "连接存储检查通过。" : `连接检查未通过：${stages[result.stage || ""] || "存储检查"}（${result.code || "UNKNOWN"}）。`);
+      const failure = result.lastOAuthError;
+      setMessage(result.available
+        ? failure ? `连接存储检查通过。最近一次 OAuth 失败：${failure.code}（${new Date(failure.at).toLocaleString("zh-CN")}）。`
+          : "连接存储检查通过；最近30分钟没有可核验的OAuth令牌兑换失败记录。"
+        : `连接检查未通过：${stages[result.stage || ""] || "存储检查"}（${result.code || "UNKNOWN"}）。`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "检查暂时失败"); }
     finally { setBusy(false); }
   }

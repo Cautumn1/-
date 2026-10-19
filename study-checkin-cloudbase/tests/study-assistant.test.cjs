@@ -258,3 +258,34 @@ test("只读元数据不访问数据库，非法日期/来源/批量RPC请求被
   const origin = await api.call({ httpMethod: "POST", path: `${PREFIX}/mcp`, headers: { origin: "https://evil.example" }, body: "{}" });
   assert.equal(origin.statusCode, 403);
 });
+
+test("OAuth诊断仅记录匹配真实待授权码的失败；公开响应不泄露细节", async () => {
+  const api = fixture();
+  const redirect = "https://chatgpt.com/connector_platform_oauth_redirect";
+  const verifier = "v".repeat(43);
+  const authorization = { response_type: "code", client_id: `study-chatgpt-${sha(redirect)}`,
+    redirect_uri: redirect, code_challenge: sha("unused").slice(0, 43),
+    code_challenge_method: "S256", state: "diagnostic-state-12345", resource: `${BASE}/mcp`,
+    scope: "study:read study:write" };
+  const consent = await api.call({ action: "authorizeAssistant", token: "user1", authorization });
+  assert.equal(consent.ok, true);
+  const code = new URL(consent.data.redirectUrl).searchParams.get("code");
+  const baseParams = { grant_type: "authorization_code", code, client_id: authorization.client_id,
+    redirect_uri: redirect, code_verifier: verifier, resource: `${BASE}/mcp` };
+  const wrong = await http(api, `${PREFIX}/oauth/token`, { ...baseParams, code: "x".repeat(43) });
+  assert.equal(wrong.statusCode, 400);
+  assert.equal(api.store.sessions[GRANT].lastOAuthError, null);
+  const badResource = await http(api, `${PREFIX}/oauth/token`, { ...baseParams, resource: undefined });
+  assert.equal(badResource.statusCode, 400);
+  assert.equal(badResource.data.error, "invalid_grant");
+  assert.equal(JSON.stringify(badResource.data).includes("RESOURCE_MISSING"), false);
+  const status = await api.call({ action: "diagnoseAssistantConnection", token: "user1" });
+  assert.equal(status.data.lastOAuthError.code, "RESOURCE_MISSING");
+  const badPKCE = await http(api, `${PREFIX}/oauth/token`, baseParams);
+  assert.equal(badPKCE.statusCode, 400);
+  const after = await api.call({ action: "diagnoseAssistantConnection", token: "user1" });
+  assert.equal(after.data.lastOAuthError.code, "PKCE_CHALLENGE_MISMATCH");
+  assert.equal(JSON.stringify(after).includes(code), false);
+  const stranger = fixture({ uid: "another-browser" });
+  assert.equal((await stranger.call({ action: "diagnoseAssistantConnection", token: "user1" })).ok, false);
+});
