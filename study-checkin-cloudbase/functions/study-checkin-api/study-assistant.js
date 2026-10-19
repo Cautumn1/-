@@ -76,6 +76,34 @@ function createStudyAssistant(deps) {
   }
   const errorCode = (error) => typeof error?.code === "string" && /^[a-zA-Z0-9_.-]{1,80}$/.test(error.code)
     ? error.code : error instanceof TypeError ? "TypeError" : "UNKNOWN";
+  const tokenFailure = (reason, message) => {
+    const error = new PublicError(message);
+    error.oauthReason = reason;
+    throw error;
+  };
+  // Do not write diagnostics for anonymous guesses: only a caller who presents
+  // an existing authorization code or refresh token may update the owner's
+  // diagnostic. Never persist the credential, its hash, or request parameters.
+  async function rememberTokenFailure(params, error) {
+    if (!object(params)) return;
+    const credential = params.grant_type === "authorization_code" ? params.code
+      : params.grant_type === "refresh_token" ? params.refresh_token : null;
+    if (typeof credential !== "string" || !/^[a-zA-Z0-9_-]{43}$/.test(credential)) return;
+    const reason = error?.oauthReason || (error instanceof PublicError
+      && error.message.startsWith("连接存储暂不可用") ? "TOKEN_TRANSACTION_FAILURE" : "TOKEN_UNEXPECTED_FAILURE");
+    if (!/^[A-Z_]{3,48}$/.test(reason)) return;
+    try {
+      const ref = grantRef();
+      const grant = first(await ref.get());
+      const expected = params.grant_type === "authorization_code" ? grant?.pending?.codeHash : grant?.refreshHash;
+      if (!expected || sha(credential) !== expected) return;
+      const previous = grant.lastOAuthError;
+      if (previous?.code === reason && Date.now() - previous.at < 60000) return;
+      await ref.update({ lastOAuthError: { code: reason, at: Date.now() } });
+    } catch {
+      // Diagnostics must never affect the OAuth protocol's original error.
+    }
+  }
   async function diagnose(token) {
     boundOwner(token);
     let stage = "grant-read";
@@ -83,6 +111,7 @@ function createStudyAssistant(deps) {
     try {
       const existing = await grantRef().get();
       if (existing?.code) throw existing;
+      const lastFailure = first(existing)?.lastOAuthError;
       stage = "transaction-start";
       tx = await db.startTransaction();
       stage = "transaction-read";
@@ -90,7 +119,12 @@ function createStudyAssistant(deps) {
       if (result?.code) throw result;
       stage = "transaction-rollback";
       await tx.rollback(); tx = null;
-      return { available: true };
+      const recent = lastFailure && typeof lastFailure.code === "string"
+        && Number.isFinite(lastFailure.at) && lastFailure.at <= Date.now()
+        && Date.now() - lastFailure.at <= 30 * 60 * 1000;
+      return { available: true, ...(recent ? { lastOAuthError: {
+        code: lastFailure.code, at: lastFailure.at,
+      } } : {}) };
     } catch (error) {
       if (tx) await tx.rollback().catch(() => {});
       return { available: false, stage, code: errorCode(error) };
@@ -285,6 +319,7 @@ function createStudyAssistant(deps) {
     await transaction(async (tx, read) => {
       const previous = await read(grantRef());
       await tx.set(grantRef(), { ...plain(previous), userKey: OWNER, memberId: owner.id,
+        lastOAuthError: null,
         pending: { ...request, bindingHash: deps.ownerUidHash(), codeHash: sha(code), expiresAt: Date.now() + 5 * 60 * 1000 } });
     });
     const target = new URL(request.redirect_uri);
@@ -308,22 +343,35 @@ function createStudyAssistant(deps) {
     return transaction(async (tx, read) => {
       const grant = await read(grantRef());
       const base = config();
-      if (!grant || params.resource !== `${base}/mcp`) fail("授权已失效，请重新连接");
+      if (!object(params)) tokenFailure("TOKEN_PARAMS_INVALID", "授权参数无效");
+      if (!grant) tokenFailure("GRANT_MISSING", "授权已失效，请重新连接");
+      if (params.resource !== `${base}/mcp`) tokenFailure(
+        params.resource ? "RESOURCE_MISMATCH" : "RESOURCE_MISSING", "授权已失效，请重新连接");
       let scope;
       if (params.grant_type === "authorization_code") {
         const pending = grant.pending;
-        if (!pending || pending.bindingHash !== deps.ownerUidHash() || pending.expiresAt <= Date.now() || sha(String(params.code || "")) !== pending.codeHash
-          || params.client_id !== pending.client_id || params.redirect_uri !== pending.redirect_uri
-          || !/^[a-zA-Z0-9._~-]{43,128}$/.test(params.code_verifier || "")
-          || crypto.createHash("sha256").update(params.code_verifier).digest("base64url") !== pending.code_challenge) fail("授权码或校验信息无效");
+        const invalid = (reason) => tokenFailure(reason, "授权码或校验信息无效");
+        if (!pending) invalid("PENDING_CODE_MISSING");
+        if (pending.bindingHash !== deps.ownerUidHash()) invalid("BROWSER_BINDING_CHANGED");
+        if (pending.expiresAt <= Date.now()) invalid("AUTH_CODE_EXPIRED");
+        if (sha(String(params.code || "")) !== pending.codeHash) invalid("AUTH_CODE_MISMATCH");
+        if (params.client_id !== pending.client_id) invalid("CLIENT_ID_MISMATCH");
+        if (params.redirect_uri !== pending.redirect_uri) invalid("REDIRECT_URI_MISMATCH");
+        if (!/^[a-zA-Z0-9._~-]{43,128}$/.test(params.code_verifier || "")) invalid("PKCE_VERIFIER_INVALID");
+        if (crypto.createHash("sha256").update(params.code_verifier).digest("base64url") !== pending.code_challenge)
+          invalid("PKCE_CHALLENGE_MISMATCH");
         scope = pending.scope;
       } else if (params.grant_type === "refresh_token") {
-        if (grant.revoked || grant.bindingHash !== deps.ownerUidHash() || grant.refreshExpiresAt <= Date.now() || sha(String(params.refresh_token || "")) !== grant.refreshHash
-          || params.client_id !== grant.clientId) fail("连接已过期或被撤销，请重新授权");
+        const invalid = (reason) => tokenFailure(reason, "连接已过期或被撤销，请重新授权");
+        if (grant.revoked) invalid("GRANT_REVOKED");
+        if (grant.bindingHash !== deps.ownerUidHash()) invalid("BROWSER_BINDING_CHANGED");
+        if (grant.refreshExpiresAt <= Date.now()) invalid("REFRESH_TOKEN_EXPIRED");
+        if (sha(String(params.refresh_token || "")) !== grant.refreshHash) invalid("REFRESH_TOKEN_MISMATCH");
+        if (params.client_id !== grant.clientId) invalid("CLIENT_ID_MISMATCH");
         scope = grant.scope;
-      } else fail("不支持的授权方式");
+      } else tokenFailure("GRANT_TYPE_UNSUPPORTED", "不支持的授权方式");
       const access = random(); const refresh = random();
-      const next = { ...plain(grant), pending: null, revoked: false, scope,
+      const next = { ...plain(grant), pending: null, lastOAuthError: null, revoked: false, scope,
         bindingHash: deps.ownerUidHash(),
         clientId: params.client_id, accessHash: sha(access), refreshHash: sha(refresh),
         accessExpiresAt: Date.now() + 60 * 60 * 1000, refreshExpiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
@@ -374,7 +422,11 @@ function createStudyAssistant(deps) {
         const target = new URL(SITE); target.searchParams.set("assistant_authorize", JSON.stringify(request));
         return response(302, undefined, { Location: target.href });
       }
-      if (path === `${prefix}/oauth/token` && method === "POST") return response(200, await exchange(parseBody(event)));
+      if (path === `${prefix}/oauth/token` && method === "POST") {
+        const params = parseBody(event);
+        try { return response(200, await exchange(params)); }
+        catch (error) { await rememberTokenFailure(params, error); throw error; }
+      }
     } catch (error) {
       return response(400, { error: path === `${prefix}/oauth/token` ? "invalid_grant" : "invalid_request",
         error_description: error instanceof PublicError ? error.message : "授权服务暂不可用" });
